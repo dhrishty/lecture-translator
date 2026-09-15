@@ -101,3 +101,9 @@ Before class, verify your Korean PDF, microphone permission, both modes, rapid s
 The repository is intended to remain private. `.vercelignore` excludes local environments, credentials, model downloads, and build outputs from uploads. Vercel runs the Webpack production build configured in `vercel.json`.
 
 The local translation URL in `.env.local` must not be copied into Vercel: localhost there refers to the cloud function, not your Mac. The site supports PDFs, notes, English transcription, editing, and copying without a backend, but Korean translation needs a reachable LibreTranslate server. A separate [container definition](deploy/libretranslate/README.md) is ready for a host that supports persistent services. Configure the resulting HTTPS URL as `LIBRETRANSLATE_URL` in Vercel, then redeploy.
+
+Published application: https://lecture-translator-three.vercel.app
+
+Private source repository: https://github.com/dhrishty/lecture-translator
+
+`render.yaml` prepares a free-tier LibreTranslate backend. A Render account connection and Blueprint deployment are still required. The public Vercel app reports translation setup as incomplete until a reachable backend URL is configured; local translation continues working on the Mac.

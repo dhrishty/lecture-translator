@@ -1,0 +1,16 @@
+# Prepared only: importing this Blueprint creates the backend after user authorization.
+services:
+  - type: web
+    name: lecture-libretranslate
+    runtime: docker
+    plan: free
+    dockerfilePath: ./deploy/libretranslate/Dockerfile
+    dockerContext: ./deploy/libretranslate
+    healthCheckPath: /languages
+    envVars:
+      - key: PORT
+        value: "8080"
+      - key: ARGOS_INTER_THREADS
+        value: "1"
+      - key: ARGOS_INTRA_THREADS
+        value: "1"
