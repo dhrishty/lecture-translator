@@ -1,0 +1,10 @@
+.git
+.agents
+.env*
+.venv-libretranslate
+.local-translation
+node_modules
+.next
+public/pdfjs
+*.log
+tests

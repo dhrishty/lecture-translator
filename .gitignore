@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Generated PDF.js assets
+/public/pdfjs/
+!.env.example
+
+# Optional local translation runtime (software only)
+/.venv-libretranslate/
+
+/.local-translation/
