@@ -9,6 +9,7 @@ export class ParagraphAudio {
   private frames: Float32Array[] = [];
   private length = 0;
   private silence = 0;
+  private lastVoice = 0;
   private active = false;
   private preroll: Float32Array = new Float32Array(0);
   constructor(public context: CaptureContext, private emit: (window: AudioWindow) => void) {}
@@ -25,15 +26,21 @@ export class ParagraphAudio {
       if (this.preroll.length) { this.frames.push(this.preroll); this.length += this.preroll.length; this.preroll = new Float32Array(0); }
     }
     this.frames.push(frame); this.length += frame.length;
+    if (voiced) this.lastVoice = this.length;
     this.silence = voiced ? 0 : this.silence + frame.length;
     if (this.silence >= SAMPLE_RATE * 3) this.finish();
     else if (this.length >= MAX_WINDOW_SAMPLES || (this.length >= SAMPLE_RATE * 15 && this.silence >= SAMPLE_RATE * 0.2)) this.flush(false);
   }
   private flush(final: boolean) {
-    const audio = new Float32Array(this.length);
+    // Keep a small tail for word endings, but never decode silence-only remnants.
+    const keep = this.lastVoice ? Math.min(this.length, this.lastVoice + SAMPLE_RATE * 0.2) : 0;
+    const audio = new Float32Array(keep);
     let offset = 0;
-    for (const frame of this.frames) { audio.set(frame, offset); offset += frame.length; frame.fill(0); }
-    this.frames = []; this.length = 0;
+    for (const frame of this.frames) {
+      if (offset < keep) audio.set(frame.subarray(0, Math.min(frame.length, keep - offset)), offset);
+      offset += frame.length; frame.fill(0);
+    }
+    this.frames = []; this.length = 0; this.lastVoice = 0;
     this.emit({ audio, final, context: { ...this.context } });
   }
   finish() {
@@ -43,7 +50,7 @@ export class ParagraphAudio {
   switchContext(context: CaptureContext) { this.finish(); this.context = context; }
   clear() {
     for (const frame of this.frames) frame.fill(0);
-    this.frames = []; this.length = 0; this.silence = 0; this.active = false;
+    this.frames = []; this.length = 0; this.lastVoice = 0; this.silence = 0; this.active = false;
     this.preroll.fill(0); this.preroll = new Float32Array(0);
   }
 }

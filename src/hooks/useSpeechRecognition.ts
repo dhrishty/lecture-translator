@@ -104,6 +104,7 @@ export function useSpeechRecognition({ onParagraph, slideNumber }: {
         const item = pending.current.get(data.id);
         if (!item) return;
         clearTimeout(item.timer); pending.current.delete(data.id);
+        if (data.warning && current()) setError(data.warning);
         if (data.error) item.reject(new Error(data.error)); else item.resolve(data);
       };
       worker.current.onerror = () => fail("Local Whisper stopped unexpectedly. Check available memory and retry.");

@@ -317,3 +317,51 @@ test("worklet stops instead of buffering indefinitely when the UI cannot acknowl
   for (let i = 0; i < 1000; i++) processor.process([[new Float32Array(1600)]]);
   assert.equal(frames, 64); assert.equal(overflow, true);
 });
+
+const quality = await import(await moduleURL("../src/lib/whisper/quality.ts"));
+test("runaway Korean loops are rejected without blocking ordinary repetition", () => {
+  assert.equal(quality.hasRepetitionLoop("이런 이래는 " + "제거하는 줄이 ".repeat(30) + "이 부분은"), true);
+  assert.equal(quality.hasRepetitionLoop("또 ".repeat(100)), true);
+  assert.equal(quality.hasRepetitionLoop("또".repeat(40)), true);
+  assert.equal(quality.hasRepetitionLoop("이 부분은 중요합니다. 또 다른 예를 봅시다. 이 부분은 시험에 나옵니다."), false);
+  assert.equal(quality.hasRepetitionLoop("No, no, no. Please listen. Again, again."), false);
+});
+test("silence after a long-window boundary seals text without another Whisper call", async () => {
+  let calls = 0; const paragraphs = [];
+  const queue = new localAudio.TranscriptionQueue(async () => { calls++; return "강의 내용"; }, text => paragraphs.push(text), () => {}, assert.fail);
+  const audio = new localAudio.ParagraphAudio({ slide: 1, mode: "ko" }, window => queue.enqueue(window));
+  for (let i = 0; i < 240; i++) audio.push(voicedFrame());
+  await queue.drain();
+  assert.equal(calls, 1); assert.equal(paragraphs.length, 0);
+  for (let i = 0; i < 30; i++) audio.push(quietFrame());
+  await queue.drain();
+  assert.equal(calls, 1); assert.deepEqual(paragraphs, ["강의 내용"]);
+});
+test("paragraph silence is trimmed from inference but preserves a short word-ending tail", () => {
+  const windows = [];
+  const audio = new localAudio.ParagraphAudio({ slide: 1, mode: "ko" }, window => windows.push(window));
+  for (let i = 0; i < 10; i++) audio.push(voicedFrame());
+  for (let i = 0; i < 30; i++) audio.push(quietFrame());
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0].audio.length, 1.2 * 16000);
+  assert.equal(windows[0].final, true);
+});
+
+test("worker clears rejected audio and returns no loop text to the translation queue", async () => {
+  const savedSelf = globalThis.self;
+  const messages = [];
+  globalThis.self = { postMessage: message => messages.push(message) };
+  const mockRuntime = 'data:text/javascript,' + encodeURIComponent('export const env = {backends:{onnx:{wasm:{}}}}; export const pipeline = async () => async () => ({text: "제거하는 줄이 ".repeat(30)});');
+  try {
+    await import(await moduleURL("../src/workers/whisper.worker.ts", {
+      '\"@huggingface/transformers\"': JSON.stringify(mockRuntime),
+      '\"@/lib/whisper/quality\"': JSON.stringify(await moduleURL("../src/lib/whisper/quality.ts")),
+    }));
+    await globalThis.self.onmessage({ data: { id: 1, type: "load" } });
+    const pcm = voicedFrame();
+    await globalThis.self.onmessage({ data: { id: 2, type: "transcribe", audio: pcm, mode: "ko" } });
+    const result = messages.find(message => message.id === 2);
+    assert.equal(result.text, ""); assert.match(result.warning, /skipped/);
+    assert.ok(pcm.every(sample => sample === 0));
+  } finally { globalThis.self = savedSelf; }
+});

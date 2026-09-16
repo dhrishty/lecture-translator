@@ -1,5 +1,7 @@
 import { env, pipeline, type AutomaticSpeechRecognitionPipeline } from "@huggingface/transformers";
 
+import { hasRepetitionLoop } from "@/lib/whisper/quality";
+
 // Cache downloaded public model assets only. No audio/text persistence.
 env.allowLocalModels = false;
 env.useBrowserCache = true;
@@ -37,9 +39,15 @@ self.onmessage = async (event: MessageEvent) => {
       try {
         const output = await recognizer(audio, {
           language: mode === "en" ? "english" : "korean", task: "transcribe",
-          return_timestamps: false, max_new_tokens: 440,
+          return_timestamps: false,
+          // Bound decoding by audio duration as well as Whisper's context limit.
+          max_new_tokens: Math.min(440, Math.max(48, Math.ceil(audio.length / 16000 * 18) + 32)),
+          repetition_penalty: 1.1,
         });
-        self.postMessage({ id, text: Array.isArray(output) ? output.map(item => item.text).join(" ") : output.text });
+        const text = Array.isArray(output) ? output.map(item => item.text).join(" ") : output.text;
+        if (hasRepetitionLoop(text)) {
+          self.postMessage({ id, text: "", warning: "Whisper repeated itself, so an unreliable audio section was skipped. Check your notes for a gap. Move the microphone closer to the speaker if possible." });
+        } else self.postMessage({ id, text });
       } finally { audio.fill(0); }
     }
   } catch {
