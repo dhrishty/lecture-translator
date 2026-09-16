@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLectureSession } from "@/hooks/useLectureSession";
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { useBeforeUnload } from "@/hooks/useBeforeUnload";
@@ -18,7 +18,13 @@ import { copyToClipboard, formatCurrentSlideForExport, formatLectureForExport } 
 type Controller = ReturnType<typeof useLectureSession>;
 function ActiveLecture({ lecture, provider }: { lecture: Controller; provider: string }) {
   const { session } = lecture;
-  const speech = useSpeechRecognition({ onFinalResult: lecture.handleFinalSpeech, onStopped: lecture.flushTranscriptBuffer, onActivity: lecture.handleSpeechActivity });
+  const speech = useSpeechRecognition({ onParagraph: lecture.handleWhisperParagraph, slideNumber: session.currentSlide });
+  const { changeSlide } = speech;
+  const navigateSlide = useCallback((number: number) => {
+    const next = Math.max(1, Math.min(number, session.totalSlides));
+    changeSlide(next);
+    lecture.goToSlide(next);
+  }, [lecture, session.totalSlides, changeSlide]);
   const [language, setLanguage] = useState<RecognitionMode>("ko");
   const [reviewing, setReviewing] = useState(false);
   const [finishing, setFinishing] = useState(false);
@@ -31,12 +37,12 @@ function ActiveLecture({ lecture, provider }: { lecture: Controller; provider: s
       const target = event.target as HTMLElement;
       if (!session.pdfUrl || ending || reviewing || finishing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || target.closest("input, textarea, select, [contenteditable], dialog")) return;
       if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-        event.preventDefault(); lecture.goToSlide(session.currentSlide + (event.key === "ArrowLeft" ? -1 : 1));
+        event.preventDefault(); navigateSlide(session.currentSlide + (event.key === "ArrowLeft" ? -1 : 1));
       }
     };
     window.addEventListener("keydown", navigate);
     return () => window.removeEventListener("keydown", navigate);
-  }, [ending, reviewing, finishing, lecture, session.currentSlide, session.pdfUrl]);
+  }, [ending, reviewing, finishing, navigateSlide, session.currentSlide, session.pdfUrl]);
   const copy = async (current = false) => {
     const snapshot = lecture.getSnapshot();
     const pending = snapshot.slides.some(s => s.transcriptSegments.some(t => t.translationStatus !== "done"));
@@ -61,17 +67,18 @@ function ActiveLecture({ lecture, provider }: { lecture: Controller; provider: s
     onBack={() => { setReviewing(false); window.scrollTo({ top: 0 }); }} onCopy={() => void copy()}
     onEnd={() => setEnding(true)} message={message} />{dialog}</>;
   const slide = session.slides[session.currentSlide - 1];
-  const translationState = speech.status === "denied" || speech.status === "unsupported" ? "error" : speech.status;
+  const translationState = speech.status === "unsupported" ? "error" : speech.status;
   return <>
     <header className="workspace-header"><span className="wordmark">Lecture / <span>Workspace</span></span><button className="text-button" onClick={() => { void speech.pause(); setEnding(true); }}>End Lecture</button></header>
     <main className="workspace">
       <div className="lecture-heading"><p className="eyebrow">A LITTLE SPACE TO FOLLOW ALONG</p><h1>{session.title}</h1><p className="muted">Nothing is saved. Copy your notes before leaving.</p></div>
       {session.pdfUrl && <PDFViewer pdfUrl={session.pdfUrl} pageNumber={session.currentSlide} />}
-      <div className="lecture-controls">{session.pdfUrl && <SlideNavigation currentSlide={session.currentSlide} totalSlides={session.totalSlides} onPrevious={() => lecture.goToSlide(session.currentSlide - 1)} onNext={() => lecture.goToSlide(session.currentSlide + 1)} />}
-        <ModeToggle language={language} disabled={finishing} onChange={next => { speech.changeLanguage(next); setLanguage(next); }} />
+      <div className="lecture-controls">{session.pdfUrl && <SlideNavigation currentSlide={session.currentSlide} totalSlides={session.totalSlides} onPrevious={() => navigateSlide(session.currentSlide - 1)} onNext={() => navigateSlide(session.currentSlide + 1)} />}
+        <ModeToggle language={language} disabled={finishing || speech.status === "processing"} onChange={next => { speech.changeLanguage(next); setLanguage(next); }} />
         <TranslationControls language={language} translationState={translationState} onStart={speech.start} onPause={() => void speech.pause()} onResume={speech.resume} speechError={speech.errorMessage} isSupported={speech.isSupported} />
       </div>
       {session.currentSlide === session.totalSlides && <div className="finish-action"><button className="primary-button" disabled={finishing} onClick={() => void finish()}>{finishing ? "Finishing transcription…" : "Finish Lecture →"}</button><p className="muted">Review all your notes, slide by slide.</p></div>}
+      <p className="provider-note" role="status">{speech.modelMessage}</p>
       <p className="provider-note">{language === "ko" ? provider : `${language === "ko-only" ? "Korean" : "English"} transcription · No translation requests`}</p>
       <ManualNotes key={`manual-${slide.slideNumber}`} value={slide.manualNotes} onChange={value => lecture.updateManualNotes(slide.slideNumber, value)} />
       <LiveTranslation segments={slide.transcriptSegments} language={language} interimText={[lecture.bufferedText, speech.interimText].filter(Boolean).join(" ")} onRetry={lecture.retryTranslation} onEdit={(id, text) => lecture.updateTranscriptNotes(slide.slideNumber, id, text)} />
@@ -99,6 +106,6 @@ export default function LectureWorkspace() {
   return lecture.hasActiveLecture ? <ActiveLecture lecture={lecture} provider={provider} /> : <>
     <header className="workspace-header"><span className="wordmark">Lecture / <span>Korean → English</span></span><span className="session-badge">Session only</span></header>
     <UploadScreen onStartWithoutSlides={lecture.startWithoutSlides} onUpload={lecture.uploadPdf} isLoading={lecture.isLoadingPdf} error={lecture.uploadError} />
-    <footer className="upload-footer"><p>{provider}</p><p>PDFs and notes stay in this tab. Chrome may send audio to its speech service.<br />Only finalized Korean text goes to the configured LibreTranslate server. English-only mode skips translation.</p></footer>
+    <footer className="upload-footer"><p>{provider}</p><p>PDFs and notes stay in this tab. Microphone audio is transcribed locally with Whisper and is never uploaded or saved.<br />Only finalized Korean paragraphs in translation mode go to the configured LibreTranslate server. Both transcription-only modes skip translation. Public model files may be cached on this device.</p></footer>
   </>;
 }

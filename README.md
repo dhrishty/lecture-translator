@@ -1,6 +1,6 @@
 # Lecture Translator
 
-A temporary Korean → English or English-only lecture workspace for Chrome on laptops. Upload slides, listen, edit notes, and copy the lecture before leaving.
+A temporary Korean → English, Korean-only, or English-only lecture workspace with local Whisper transcription. Upload slides, listen, edit notes, and copy the lecture before leaving.
 
 ## Run
 
@@ -47,7 +47,9 @@ The setup script creates a project-local Python virtual environment and installs
 - Choose **Start without slides** for a notes-only lecture, or upload a PDF, up to 100 MB. Password-protected PDFs are unsupported.
 - Use the language icon to toggle **Korean → English translation** or **English-only transcription**.
 - Start listening and allow microphone access. Language changes restart recognition with the correct language after flushing the previous mode; late finalized speech retains its original language.
-- Paragraphs close after **3 seconds without recognition activity**, including interim results. Browser sentence boundaries and automatic recognition restarts do not force a new paragraph. Pause, Finish, slide changes, and mode changes flush captured text immediately. Long paragraphs are split only for transport and rejoined in the notes. Silence timing follows Chrome recognition events, so browser delays can affect it.
+- Local microphone capture uses an AudioWorklet and 16 kHz mono PCM. Whisper Base runs in a dedicated worker with WebGPU (fp32 encoder/q4 decoder), falling back to quantized WASM (q8) during initialization. No Chrome Web Speech API remains.
+- Paragraphs close after **3 seconds of energy-detected silence**. Recognition windows are at most about 24 seconds; short pauses after 15 seconds are preferred as window boundaries. Long speech is assembled as text before translation. Pause, Finish, slide changes and mode changes close the current paragraph. Each result carries its capture slide and mode.
+- Capture pauses when pending inference reaches 48 seconds or 48 jobs, allowing the queue to drain. A hard limit of 100 seconds/64 jobs prevents unbounded audio accumulation if callbacks are delayed. Only bounded PCM and model tensors exist in RAM; no full lecture recording exists. Continuous 60–90-minute performance depends on hardware.
 - Navigate with arrows or keyboard Left/Right. Notes retain their slide, and typing in editors does not navigate slides.
 - Edit manual notes and completed transcriptions with the same lightweight block editor: `/heading 1`, `/heading 2`, `/heading 3`, `/bullet`, or the format toolbar. Type `- ` for a bullet; Enter continues the list, and Enter on an empty bullet returns to normal text. `# `, `## `, and `### ` also create headings. Basic undo/redo is available while editing.
 - Notes have no white focus border.
@@ -60,9 +62,9 @@ The setup script creates a project-local Python virtual environment and installs
 
 PDFs, manual notes, transcripts, translations, and the review page live only in browser memory. No accounts, database, analytics, localStorage, IndexedDB, history, or recovery. PDFs and manual notes never enter translation requests. The app does not record raw audio or log transcript payloads. Translation HTTP requests/responses use `no-store`; no transcript cache is maintained.
 
-Chrome may process microphone audio remotely. The selected LibreTranslate host receives finalized Korean text; its policies apply. A locally hosted translation server avoids sending that text to a public translation host, but does not change Chrome's speech processing. Do not infer public-provider zero retention from the skill's marketing claims.
+Microphone audio is never uploaded, recorded to a file, or placed in browser storage. Audio buffers are cleared/released after inference and the worker is terminated on exit. Public model/runtime files may be cached by Transformers.js; they contain no lecture data. Only finalized Korean paragraphs in translation mode go through the existing LibreTranslate endpoint. Transcription-only modes send no text for translation. Browser/OS memory reclamation is outside the app's control.
 
-Chrome requires microphone access and HTTPS or localhost. Classroom noise, vocabulary, distance from the speaker, network interruptions, and automatic speech-service stops affect accuracy. Recognition retries are bounded. A gap-free 60–90-minute lecture is not guaranteed.
+Use HTTPS or localhost with microphone permission and AudioWorklet/WebAssembly support. A recent desktop Chrome/Edge with WebGPU and a laptop with 8 GB+ RAM is recommended. Base model weights are approximately 207 MB for WebGPU or 77 MB for WASM, plus tokenizer/runtime files; falling back after a GPU failure can download both variants. WASM may not run in real time. Keep the tab open and device awake. Noise, hard audio-window boundaries and Korean technical vocabulary can affect accuracy; Whisper can produce incorrect text. Silence filtering reduces unnecessary inference but is not a trained voice-activity detector. No LLM, summary or other generative feature is included.
 
 Refresh/close triggers the browser's native leave warning where supported. The browser controls the message and may omit it. Page departure clears session memory, including back-cache recovery. Always copy before leaving.
 
@@ -94,7 +96,7 @@ npm run build -- --webpack
 
 Tests cover slide/language chunk boundaries, buffer disposal, block formatting, edited export, request validation, missing server setup, Korean support checks, minimal translation payloads, auth/throttling failures, and invalid responses. Provider HTTP is mocked in unit tests; that does not certify live availability.
 
-Before class, verify your Korean PDF, microphone permission, both modes, rapid slide changes, Finish Lecture, editing, and Notion paste in Chrome. Browser layout and real microphone behavior have not been verified by the agent because no browser was available.
+Before class, verify your Korean PDF, microphone permission, all three modes, rapid slide changes, Finish Lecture, editing, and Notion paste in Chrome. Browser layout, WebGPU execution, Korean classroom accuracy and sustained real-time microphone behavior still require device testing; no browser was connected during implementation. Automated tests simulate 90 minutes of PCM and verify bounded buffers, silence, cancellation and slide association.
 
 ## GitHub and Vercel
 

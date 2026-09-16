@@ -227,39 +227,93 @@ test("export pairs Korean paragraphs with English and does not duplicate Korean-
   assert.equal(text.split("한글만").length, 2);
 });
 
-// Exercise actual recognition handlers with a minimal hook/browser harness.
-test("recognition survives quiet sessions, retries network failures, and pause cancels retries", async context => {
-  context.mock.timers.enable({ apis: ["setTimeout"] });
-  const reactStub = 'data:text/javascript,' + encodeURIComponent('export const useCallback = f => f; export const useRef = current => ({current}); export const useState = v => [v, () => {}]; export const useEffect = f => { f(); };');
-  const speechModule = await import(await moduleURL("../src/hooks/useSpeechRecognition.ts", { '"react"': JSON.stringify(reactStub) }));
-  const saved = globalThis.window;
-  let instance; let starts = 0; let stopped = 0; const results = [];
-  class Recognition {
-    constructor() {
-      // The fake browser exposes its active recognition instance to the test.
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      instance = this;
+const localAudio = await import(await moduleURL("../src/lib/whisper/audio.ts"));
+const voicedFrame = () => new Float32Array(1600).fill(0.03);
+const quietFrame = () => new Float32Array(1600);
+test("local audio seals paragraphs at three seconds of silence and ignores empty rooms", () => {
+  const emitted = [];
+  const audio = new localAudio.ParagraphAudio({ slide: 1, mode: "ko" }, window => emitted.push(window));
+  for (let i = 0; i < 100; i++) audio.push(quietFrame());
+  assert.equal(emitted.length, 0);
+  audio.push(voicedFrame());
+  for (let i = 0; i < 29; i++) audio.push(quietFrame());
+  assert.equal(emitted.length, 0);
+  audio.push(quietFrame());
+  assert.equal(emitted.length, 1); assert.equal(emitted[0].final, true);
+  emitted[0].audio.fill(0);
+});
+test("90 minutes of simulated continuous capture uses bounded windows, not a recording", () => {
+  let total = 0; let windows = 0; let paragraphs = 0;
+  const audio = new localAudio.ParagraphAudio({ slide: 1, mode: "ko" }, window => {
+    assert.ok(window.audio.length <= localAudio.MAX_WINDOW_SAMPLES);
+    total += window.audio.length; windows++; if (window.final) paragraphs++;
+    window.audio.fill(0);
+  });
+  for (let i = 0; i < 90 * 60 * 10; i++) audio.push(voicedFrame());
+  audio.finish();
+  assert.equal(total, 90 * 60 * 16000);
+  assert.ok(windows > 200); assert.equal(paragraphs, 1);
+});
+test("late local results keep their capture slide/mode and translation waits for the paragraph", async () => {
+  const paragraphs = []; let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const queue = new localAudio.TranscriptionQueue(async () => { await gate; return "문장"; },
+    (text, captured) => paragraphs.push({ text, ...captured }), () => {}, assert.fail);
+  const first = voicedFrame();
+  queue.enqueue({ audio: first, final: false, context: { slide: 1, mode: "ko" } });
+  queue.enqueue({ audio: voicedFrame(), final: true, context: { slide: 1, mode: "ko" } });
+  queue.enqueue({ audio: voicedFrame(), final: true, context: { slide: 2, mode: "ko-only" } });
+  assert.equal(paragraphs.length, 0);
+  release(); await queue.drain();
+  assert.deepEqual(paragraphs, [{ text: "문장 문장", slide: 1, mode: "ko" }, { text: "문장", slide: 2, mode: "ko-only" }]);
+  assert.ok(first.every(sample => sample === 0)); assert.equal(queue.pendingSamples, 0);
+});
+test("ending a session discards pending PCM and rejects late text", async () => {
+  let release; let delivered = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const queue = new localAudio.TranscriptionQueue(async () => { await gate; return "Late"; }, () => delivered++, () => {}, assert.fail);
+  const pending = voicedFrame();
+  queue.enqueue({ audio: voicedFrame(), final: true, context: { slide: 1, mode: "ko" } });
+  queue.enqueue({ audio: pending, final: true, context: { slide: 1, mode: "ko" } });
+  queue.clear(); release(); await Promise.resolve(); await Promise.resolve();
+  assert.ok(pending.every(sample => sample === 0)); assert.equal(delivered, 0); assert.equal(queue.pendingSamples, 0);
+});
+test("a stalled device cannot create an unbounded audio queue", () => {
+  let errors = 0;
+  const queue = new localAudio.TranscriptionQueue(() => new Promise(() => {}), () => {}, () => {}, () => errors++);
+  for (let i = 0; i < 8; i++) queue.enqueue({ audio: new Float32Array(24 * 16000), final: true, context: { slide: 1, mode: "ko" } });
+  assert.equal(errors, 1); assert.equal(queue.pendingSamples, 0);
+});
+
+test("microphone worklet resamples stereo to 16 kHz mono and flushes its final tail", async () => {
+  const { runInNewContext } = await import("node:vm");
+  const source = await readFile(new URL("../public/microphone-worklet.js", import.meta.url), "utf8");
+  for (const sampleRate of [44100, 48000]) {
+    let Processor; const messages = [];
+    class Base { constructor() { this.port = { postMessage: message => messages.push(message) }; } }
+    runInNewContext(source, { AudioWorkletProcessor: Base, sampleRate, Float32Array, registerProcessor: (_name, type) => { Processor = type; } });
+    const processor = new Processor();
+    let remaining = sampleRate;
+    while (remaining) {
+      const length = Math.min(128, remaining); remaining -= length;
+      processor.process([[new Float32Array(length).fill(0.2), new Float32Array(length).fill(0.4)]]);
     }
-    start() { starts++; this.onstart(); }
-    stop() { this.onend(); }
-    abort() {}
+    processor.port.onmessage({ data: "stop" });
+    assert.equal(messages.at(-1), "stopped");
+    const audio = messages.filter(item => item instanceof Float32Array);
+    assert.equal(audio.reduce((sum, frame) => sum + frame.length, 0), 16000);
+    assert.ok(audio.every(frame => frame.every(value => Math.abs(value - 0.3) < 0.0001)));
+    assert.equal(processor.process([]), false);
   }
-  globalThis.window = { SpeechRecognition: Recognition, addEventListener() {}, removeEventListener() {} };
-  try {
-    const speech = speechModule.useSpeechRecognition({ onFinalResult: (...args) => results.push(args), onStopped: () => stopped++, onActivity() {} });
-    speech.start();
-    for (let i = 0; i < 8; i++) { instance.onerror({ error: "no-speech" }); instance.onend(); context.mock.timers.tick(500); }
-    assert.equal(starts, 9); assert.equal(stopped, 0);
-    instance.onerror({ error: "network" }); instance.onend(); context.mock.timers.tick(1000);
-    assert.equal(starts, 10); assert.equal(stopped, 0);
-    speech.changeLanguage("ko-only"); context.mock.timers.tick(1000);
-    assert.equal(instance.lang, "ko-KR");
-    const result = Object.assign([{ transcript: "한글" }], { isFinal: true });
-    instance.onresult({ resultIndex: 0, results: [result] });
-    assert.deepEqual(results, [["한글", "ko-only"]]);
-    instance.onerror({ error: "network" }); instance.onend();
-    const before = starts;
-    await speech.pause(); context.mock.timers.tick(20000);
-    assert.equal(starts, before);
-  } finally { globalThis.window = saved; }
+});
+
+test("worklet stops instead of buffering indefinitely when the UI cannot acknowledge audio", async () => {
+  const { runInNewContext } = await import("node:vm");
+  const source = await readFile(new URL("../public/microphone-worklet.js", import.meta.url), "utf8");
+  let Processor; let frames = 0; let overflow = false;
+  class Base { constructor() { this.port = { postMessage: message => { if (message === "overflow") overflow = true; else frames++; } }; } }
+  runInNewContext(source, { AudioWorkletProcessor: Base, sampleRate: 16000, Float32Array, registerProcessor: (_name, type) => { Processor = type; } });
+  const processor = new Processor();
+  for (let i = 0; i < 1000; i++) processor.process([[new Float32Array(1600)]]);
+  assert.equal(frames, 64); assert.equal(overflow, true);
 });

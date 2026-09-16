@@ -1,0 +1,48 @@
+import { env, pipeline, type AutomaticSpeechRecognitionPipeline } from "@huggingface/transformers";
+
+// Cache downloaded public model assets only. No audio/text persistence.
+env.allowLocalModels = false;
+env.useBrowserCache = true;
+if (env.backends.onnx.wasm) {
+  env.backends.onnx.wasm.numThreads = 1;
+  env.backends.onnx.wasm.proxy = false;
+}
+let recognizer: AutomaticSpeechRecognitionPipeline | null = null;
+let backend = "wasm";
+self.onmessage = async (event: MessageEvent) => {
+  const { id, type, audio, mode } = event.data;
+  try {
+    if (type === "load") {
+      const progress_callback = (progress: { status: string; progress?: number; file?: string }) => {
+        self.postMessage({ type: "progress", message: progress.status === "progress" ? `Downloading ${progress.file ?? "model"}: ${Math.round(progress.progress ?? 0)}%` : "Preparing local Whisper…" });
+      };
+      if (!recognizer) {
+        try {
+          if (!("gpu" in navigator)) throw new Error("WebGPU unavailable");
+          recognizer = await pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
+            device: "webgpu", dtype: { encoder_model: "fp32", decoder_model_merged: "q4" }, progress_callback,
+          });
+          backend = "webgpu";
+        } catch {
+          self.postMessage({ type: "progress", message: "GPU unavailable. Loading local CPU fallback (may be slower)…" });
+          recognizer = await pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
+            device: "wasm", dtype: "q8", progress_callback,
+          });
+          backend = "wasm";
+        }
+      }
+      self.postMessage({ id, backend });
+    } else if (type === "transcribe") {
+      if (!recognizer) throw new Error("Model not loaded");
+      try {
+        const output = await recognizer(audio, {
+          language: mode === "en" ? "english" : "korean", task: "transcribe",
+          return_timestamps: false, max_new_tokens: 440,
+        });
+        self.postMessage({ id, text: Array.isArray(output) ? output.map(item => item.text).join(" ") : output.text });
+      } finally { audio.fill(0); }
+    }
+  } catch {
+    self.postMessage({ id, error: "Local Whisper could not process this request. Check model download access, available memory, and browser support." });
+  }
+};

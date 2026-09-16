@@ -7,7 +7,7 @@ export function LiveTranslation({ segments, interimText = "", onRetry, onEdit, l
   return <section className="document-section">
     <div className="section-heading"><h2>Transcribed Notes</h2><span>{language === "ko" ? "Korean → English" : language === "ko-only" ? "Korean only" : "English only"}</span></div>
     <div className="translation-text">
-      {!segments.length && <p className="placeholder">Paragraphs appear after 3 seconds without speech updates. Korean translations appear below the original paragraph.</p>}
+      {!segments.length && <p className="placeholder">Paragraphs appear after 3 seconds of detected silence. Korean translations appear below the original paragraph.</p>}
       {segments.map((segment, index) => {
         const bilingual = segment.sourceLanguage === "ko" && !segment.transcribeOnly;
         return <div className="transcript-segment" key={segment.id}>
@@ -19,6 +19,6 @@ export function LiveTranslation({ segments, interimText = "", onRetry, onEdit, l
         </div>;
       })}
     </div>
-    {interimText && <p className="interim" lang={language === "en" ? "en" : "ko"}>{interimText} <small>· Building paragraph — waiting for 3 seconds without speech updates</small></p>}
+    {interimText && <p className="interim" lang={language === "en" ? "en" : "ko"}>{interimText} <small>· Building paragraph locally</small></p>}
   </section>;
 }

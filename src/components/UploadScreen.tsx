@@ -63,7 +63,7 @@ export function UploadScreen({ onUpload, onStartWithoutSlides, isLoading, error 
         </div>
 
         <p className="text-xs text-muted/70">
-          Optimized for Chrome · Korean → English · No account required
+          Local Whisper transcription · Korean & English · No account required
         </p>
       </div>
     </div>

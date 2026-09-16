@@ -1,144 +1,170 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RecognitionMode } from "@/types/lecture";
-import type { SpeechRecognitionInstance } from "@/types/speech";
-export type SpeechStatus = "idle" | "listening" | "paused" | "reconnecting" | "unsupported" | "denied" | "error";
+import { ParagraphAudio, TranscriptionQueue, type CaptureContext } from "@/lib/whisper/audio";
+export type SpeechStatus = "idle" | "loading" | "listening" | "processing" | "paused" | "unsupported" | "error";
 
-export function useSpeechRecognition({ onFinalResult, onStopped, onActivity }: {
-  onFinalResult: (text: string, language: RecognitionMode) => void; onStopped: () => void; onActivity: () => void;
+export function useSpeechRecognition({ onParagraph, slideNumber }: {
+  onParagraph: (text: string, slide: number, mode: RecognitionMode) => void; slideNumber: number;
 }) {
   const [status, setStatus] = useState<SpeechStatus>("idle");
   const [interimText, setInterimText] = useState("");
   const [errorMessage, setError] = useState<string | null>(null);
-  const recognition = useRef<SpeechRecognitionInstance | null>(null);
-  const desiredLanguage = useRef<RecognitionMode>("ko");
-  const stopWaiters = useRef<Array<() => void>>([]);
-  const listening = useRef(false);
-  const running = useRef(false);
-  const stopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const callbacks = useRef({ onFinalResult, onStopped, onActivity });
-  useEffect(() => { callbacks.current = { onFinalResult, onStopped, onActivity }; }, [onFinalResult, onStopped, onActivity]);
-  const isSupported = typeof window !== "undefined" && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const [modelMessage, setModelMessage] = useState("Whisper Base · Local transcription · Initial download about 80–210 MB plus runtime");
+  const [isSupported, setSupported] = useState(true);
+  const callback = useRef(onParagraph);
+  useEffect(() => { callback.current = onParagraph; }, [onParagraph]);
+  const context = useRef<CaptureContext>({ slide: slideNumber, mode: "ko" });
+  const worker = useRef<Worker | null>(null);
+  const stream = useRef<MediaStream | null>(null);
+  const audioContext = useRef<AudioContext | null>(null);
+  const capture = useRef<AudioWorkletNode | null>(null);
+  const segmenter = useRef<ParagraphAudio | null>(null);
+  const queue = useRef<TranscriptionQueue | null>(null);
+  const wanted = useRef(false);
+  const epoch = useRef(0);
+  const nextId = useRef(0);
+  const pending = useRef(new Map<number, { resolve: (value: { text?: string; backend?: string }) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>());
+  const pausing = useRef<Promise<void> | null>(null);
+  const lastFrame = useRef(0);
+  const watchdog = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stopAck = useRef<(() => void) | null>(null);
 
-  const start = useCallback(() => {
-    const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!Ctor) { setStatus("unsupported"); return; }
-    if (listening.current || running.current) return;
-    listening.current = true;
-    setError(null);
-    if (timer.current) clearTimeout(timer.current);
-    let networkFailures = 0;
-    let restartDelay = 500;
-    let finalIndices = new Set<number>();
-    const instance = recognition.current ?? new Ctor();
-    recognition.current = instance;
-    let runLanguage = desiredLanguage.current;
-    instance.continuous = true;
-    instance.interimResults = true;
+  const releaseMicrophone = useCallback(() => {
+    if (watchdog.current) clearInterval(watchdog.current);
+    watchdog.current = null;
+    if (capture.current) { capture.current.port.onmessage = null; capture.current.port.close(); capture.current.disconnect(); }
+    capture.current = null;
+    stream.current?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+    stream.current = null;
+    const audio = audioContext.current; audioContext.current = null;
+    if (audio) { audio.onstatechange = null; void audio.close().catch(() => {}); }
+    stopAck.current?.(); stopAck.current = null;
+  }, []);
+  const destroyWorker = useCallback(() => {
+    worker.current?.terminate(); worker.current = null;
+    for (const request of pending.current.values()) { clearTimeout(request.timer); request.reject(new Error("Local transcription cancelled")); }
+    pending.current.clear();
+  }, []);
+  const dispose = useCallback(() => {
+    epoch.current++; wanted.current = false;
+    releaseMicrophone(); segmenter.current?.clear(); segmenter.current = null;
+    queue.current?.clear(); queue.current = null; destroyWorker();
+  }, [releaseMicrophone, destroyWorker]);
+
+  const pause = useCallback((): Promise<void> => {
+    if (pausing.current) return pausing.current;
+    wanted.current = false;
+    const runEpoch = epoch.current;
+    const finishing = (async () => {
+      // Stop downloading immediately if the microphone has not started.
+      if (!capture.current && !queue.current) { epoch.current++; releaseMicrophone(); destroyWorker(); setStatus("paused"); return; }
+      setStatus("processing");
+      if (capture.current) await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, 1000);
+        stopAck.current = () => { clearTimeout(timer); resolve(); };
+        capture.current!.port.postMessage("stop");
+      });
+      releaseMicrophone(); segmenter.current?.finish();
+      await queue.current?.drain();
+      if (runEpoch === epoch.current) { setInterimText(""); setStatus("paused"); }
+    })();
+    pausing.current = finishing;
+    void finishing.finally(() => { pausing.current = null; });
+    return finishing;
+  }, [releaseMicrophone, destroyWorker]);
+
+  const start = useCallback(async () => {
+    if (wanted.current || pausing.current) return;
+    if (!navigator.mediaDevices?.getUserMedia || !window.AudioWorkletNode || !window.Worker) { setSupported(false); setStatus("unsupported"); return; }
+    queue.current?.clear(); queue.current = null; segmenter.current?.clear(); segmenter.current = null;
+    wanted.current = true; setError(null); setStatus("loading");
+    const runEpoch = ++epoch.current;
+    const current = () => epoch.current === runEpoch;
     const fail = (message: string) => {
-      listening.current = false;
-      setStatus("error"); setError(message);
-      callbacks.current.onStopped();
+      if (!current()) return;
+      wanted.current = false; releaseMicrophone(); segmenter.current?.clear(); queue.current?.clear(); destroyWorker();
+      setInterimText(""); setError(message); setStatus("error");
     };
-    const begin = () => {
-      if (!listening.current) return;
-      finalIndices = new Set();
-      runLanguage = desiredLanguage.current;
-      instance.lang = runLanguage === "en" ? "en-US" : "ko-KR";
-      try { running.current = true; instance.start(); }
-      catch { running.current = false; fail("Could not start the microphone. Try again."); }
-    };
-    instance.onstart = () => { setStatus("listening"); };
-    instance.onresult = event => {
-      networkFailures = 0; restartDelay = 500; setError(null);
-      callbacks.current.onActivity();
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        const text = result[0]?.transcript.trim();
-        if (result.isFinal && text && !finalIndices.has(i)) {
-          finalIndices.add(i);
-          callbacks.current.onFinalResult(text, runLanguage);
-        } else if (!result.isFinal) interim += text ?? "";
-      }
-      setInterimText(interim);
-    };
-    instance.onerror = event => {
-      if (event.error === "no-speech" || event.error === "aborted") return;
-      if (event.error === "network" && listening.current && ++networkFailures <= 5) {
-        restartDelay = Math.min(1000 * 2 ** (networkFailures - 1), 10000);
-        setStatus("reconnecting");
-        setError("Speech connection interrupted. Reconnecting automatically…");
-        return;
-      }
-      fail(event.error === "not-allowed" || event.error === "service-not-allowed"
-        ? "Microphone permission denied. Allow microphone access in Chrome’s site settings, then retry."
-        : `Speech recognition stopped (${event.error}). Check your microphone and connection, then retry.`);
-    };
-    instance.onend = () => {
-      running.current = false; setInterimText("");
-      if (!listening.current) callbacks.current.onStopped();
-      if (stopTimer.current) clearTimeout(stopTimer.current);
-      stopWaiters.current.splice(0).forEach(resolve => resolve());
-      if (!listening.current) return;
-      setStatus("reconnecting");
-      timer.current = setTimeout(begin, restartDelay);
-    };
-    begin();
-  }, []);
-  const pause = useCallback(() => {
-    listening.current = false;
-    if (timer.current) clearTimeout(timer.current);
-    const stopped = new Promise<void>(resolve => {
-      if (running.current) stopWaiters.current.push(resolve); else resolve();
-    });
-    if (running.current) {
-      // A browser may never deliver onend after a device failure. Don't trap the review flow.
-      if (stopTimer.current) clearTimeout(stopTimer.current);
-      stopTimer.current = setTimeout(() => {
-        if (!running.current) return;
-        const instance = recognition.current;
-        if (instance) {
-          instance.onresult = null; instance.onend = null; instance.onstart = null; instance.onerror = null;
-          instance.abort();
+    try {
+      // Create/resume AudioContext during the user gesture, before model downloads.
+      audioContext.current = new AudioContext();
+      await audioContext.current.resume();
+      if (!current() || !wanted.current) return;
+      if (!worker.current) worker.current = new Worker(new URL("../workers/whisper.worker.ts", import.meta.url), { type: "module" });
+      const request = (type: string, audio?: Float32Array, mode?: RecognitionMode) => new Promise<{ text?: string; backend?: string }>((resolve, reject) => {
+        const id = ++nextId.current;
+        const timer = setTimeout(() => { pending.current.delete(id); reject(new Error("Whisper took too long. Try a faster device or reload the model.")); }, type === "load" ? 600000 : 180000);
+        pending.current.set(id, { resolve, reject, timer });
+        worker.current!.postMessage({ id, type, audio, mode }, audio ? [audio.buffer] : []);
+      });
+      worker.current.onmessage = event => {
+        const data = event.data;
+        if (data.type === "progress") { if (current()) setModelMessage(data.message); return; }
+        const item = pending.current.get(data.id);
+        if (!item) return;
+        clearTimeout(item.timer); pending.current.delete(data.id);
+        if (data.error) item.reject(new Error(data.error)); else item.resolve(data);
+      };
+      worker.current.onerror = () => fail("Local Whisper stopped unexpectedly. Check available memory and retry.");
+      const loaded = await request("load");
+      if (!current() || !wanted.current) return;
+      setModelMessage(`Whisper Base · ${loaded.backend === "webgpu" ? "WebGPU" : "CPU / WASM (slower)"} · Audio stays on this device`);
+      const media = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
+      if (!current() || !wanted.current) { media.getTracks().forEach(track => track.stop()); return; }
+      stream.current = media;
+      const audio = audioContext.current!;
+      await audio.audioWorklet.addModule("/microphone-worklet.js");
+      if (!current() || !wanted.current) return;
+      queue.current = new TranscriptionQueue(async (pcm, mode) => (await request("transcribe", pcm, mode)).text ?? "",
+        (text, captured) => { if (current()) callback.current(text, captured.slide, captured.mode); },
+        (text, captured) => { if (current() && captured.slide === context.current.slide) setInterimText(text); }, fail);
+      segmenter.current = new ParagraphAudio({ ...context.current }, window => {
+        queue.current!.enqueue(window);
+        if (queue.current!.overloaded && wanted.current) {
+          setError("This device is falling behind. Microphone paused while pending audio finishes; resume when ready.");
+          void pause();
         }
-        recognition.current = null;
-        running.current = false;
-        callbacks.current.onStopped();
-        setError("The microphone did not stop normally. Finalized text is kept; unfinished speech may be missing.");
-        stopWaiters.current.splice(0).forEach(resolve => resolve());
-      }, 2500);
-      try { recognition.current?.stop(); } catch {
-        running.current = false;
-        if (stopTimer.current) clearTimeout(stopTimer.current);
-        stopWaiters.current.splice(0).forEach(resolve => resolve());
-      }
+      });
+      const node = new AudioWorkletNode(audio, "local-microphone");
+      capture.current = node;
+      node.port.onmessage = event => {
+        if (event.data === "stopped") { stopAck.current?.(); return; }
+        if (event.data === "overflow") { fail("The page stopped keeping up with microphone capture. Unprocessed audio was discarded. Keep the tab active and retry."); return; }
+        node.port.postMessage("ack");
+        lastFrame.current = Date.now();
+        if (current()) segmenter.current?.push(event.data as Float32Array);
+      };
+      node.onprocessorerror = () => fail("Microphone processing stopped. Retry to reconnect your microphone.");
+      const source = audio.createMediaStreamSource(media);
+      const silent = audio.createGain(); silent.gain.value = 0;
+      source.connect(node); node.connect(silent); silent.connect(audio.destination);
+      const interruption = () => {
+        if (wanted.current) { setError("Microphone capture was interrupted. Keep this tab open and the device awake, then resume."); void pause(); }
+      };
+      media.getTracks().forEach(track => { track.onended = interruption; });
+      audio.onstatechange = () => { if (audio.state !== "running") interruption(); };
+      lastFrame.current = Date.now();
+      watchdog.current = setInterval(() => { if (Date.now() - lastFrame.current > 5000) interruption(); }, 2000);
+      setStatus("listening");
+    } catch (error) {
+      if (current()) fail(error instanceof Error ? error.message : "Cannot start local transcription. Check microphone permission and model download access.");
     }
-    setInterimText(""); setStatus("paused");
-    callbacks.current.onStopped();
-    return stopped;
+  }, [pause, releaseMicrophone, destroyWorker]);
+
+  const changeLanguage = useCallback((mode: RecognitionMode) => {
+    context.current = { ...context.current, mode };
+    segmenter.current?.switchContext({ ...context.current }); setInterimText("");
   }, []);
-  const changeLanguage = useCallback((language: RecognitionMode) => {
-    desiredLanguage.current = language;
-    callbacks.current.onStopped();
-    if (running.current) recognition.current?.stop();
+  const changeSlide = useCallback((slide: number) => {
+    if (slide === context.current.slide) return;
+    context.current = { ...context.current, slide };
+    segmenter.current?.switchContext({ ...context.current }); setInterimText("");
   }, []);
+  useEffect(() => { changeSlide(slideNumber); }, [slideNumber, changeSlide]);
   useEffect(() => {
-    const dispose = () => {
-    listening.current = false;
-    if (timer.current) clearTimeout(timer.current);
-    if (stopTimer.current) clearTimeout(stopTimer.current);
-    const instance = recognition.current;
-    if (instance) {
-      instance.onresult = null; instance.onend = null; instance.onstart = null; instance.onerror = null;
-      instance.abort();
-      if (stopTimer.current) clearTimeout(stopTimer.current);
-      stopWaiters.current.splice(0).forEach(resolve => resolve());
-    }
-    };
     window.addEventListener("pagehide", dispose);
     return () => { window.removeEventListener("pagehide", dispose); dispose(); };
-  }, []);
-  return { status, interimText, errorMessage, isSupported, start, pause, changeLanguage, resume: start };
+  }, [dispose]);
+  return { status, interimText, errorMessage, modelMessage, isSupported, start, pause, changeLanguage, changeSlide, resume: start };
 }
