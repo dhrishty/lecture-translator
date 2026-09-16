@@ -19,7 +19,7 @@ export function LectureReview({ session, onManualEdit, onTranscriptEdit, onRetry
       {session.slides.map(slide => <section className="review-slide" key={slide.slideNumber} aria-labelledby={`review-slide-${slide.slideNumber}`}>
         <h2 id={`review-slide-${slide.slideNumber}`}>{session.pdfUrl ? `Slide ${slide.slideNumber}` : "Lecture notes"}</h2>
         <ManualNotes value={slide.manualNotes} onChange={text => onManualEdit(slide.slideNumber, text)} />
-        <LiveTranslation segments={slide.transcriptSegments} language={slide.transcriptSegments.some(s => s.sourceLanguage === "ko") ? "ko" : "en"}
+        <LiveTranslation segments={slide.transcriptSegments} language={slide.transcriptSegments.some(s => s.sourceLanguage === "ko") ? (slide.transcriptSegments.some(s => s.sourceLanguage === "ko" && !s.transcribeOnly) ? "ko" : "ko-only") : "en"}
           onRetry={onRetry} onEdit={(id, text) => onTranscriptEdit(slide.slideNumber, id, text)} />
       </section>)}
       <footer className="copy-footer"><button className="primary-button" onClick={onCopy}>Copy Lecture</button><p className="muted">Nothing is saved. Your notes disappear when you leave.</p></footer>

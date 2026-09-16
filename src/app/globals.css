@@ -54,3 +54,7 @@ dialog { margin: auto; max-width: 460px; width: calc(100% - 32px); background: #
 .finish-action { text-align: center; margin: 18px 0; }.finish-action p { margin-top: 6px; }
 .review-actions { display: flex; align-items: center; justify-content: center; gap: 24px; }.copy-message { text-align: center; color: #bcc4b8; font-size: 13px; min-height: 24px; margin-top: 10px; }
 .review-slide { padding: 30px 0 12px; border-top: 1px solid #45494e; margin-top: 28px; }.review-slide > h2 { font-size: 24px; margin-bottom: 22px; font-weight: 500; }.review-slide .document-section { margin-top: 12px; }
+
+.mode-toggle select { background: transparent; color: inherit; border: 0; font: inherit; max-width: 100%; }
+.mode-toggle option { background: #25272b; color: #f4f4f5; }
+.transcript-segment > .korean-text { white-space: pre-wrap; margin-bottom: .75rem; }

@@ -9,7 +9,7 @@ export interface BufferedPhrase {
 export interface TranscriptBuffer {
   phrases: BufferedPhrase[];
   slideNumber: number;
-  sourceLanguage: "ko" | "en";
+  sourceLanguage: "ko" | "ko-only" | "en";
   flushTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -34,8 +34,8 @@ export function addFinalizedPhrase(
   buffer: TranscriptBuffer,
   text: string,
   slideNumber: number,
-  onFlush: (text: string, slideNumber: number, sourceLanguage: "ko" | "en") => void,
-  sourceLanguage: "ko" | "en" = "ko",
+  onFlush: (text: string, slideNumber: number, sourceLanguage: "ko" | "ko-only" | "en") => void,
+  sourceLanguage: "ko" | "ko-only" | "en" = "ko",
 ): void {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -61,7 +61,7 @@ export function addFinalizedPhrase(
 // Interim results count as continued speech, not as a finished paragraph.
 export function noteSpeechActivity(
   buffer: TranscriptBuffer,
-  onFlush: (text: string, slideNumber: number, sourceLanguage: "ko" | "en") => void,
+  onFlush: (text: string, slideNumber: number, sourceLanguage: "ko" | "ko-only" | "en") => void,
 ): void {
   clearFlushTimer(buffer);
   if (!buffer.phrases.length) return;
@@ -70,7 +70,7 @@ export function noteSpeechActivity(
 
 export function flushBuffer(
   buffer: TranscriptBuffer,
-  onFlush: (text: string, slideNumber: number, sourceLanguage: "ko" | "en") => void,
+  onFlush: (text: string, slideNumber: number, sourceLanguage: "ko" | "ko-only" | "en") => void,
 ): void {
   clearFlushTimer(buffer);
   if (buffer.phrases.length === 0) return;

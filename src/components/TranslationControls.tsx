@@ -1,11 +1,11 @@
 interface TranslationControlsProps {
-  translationState: "idle" | "listening" | "paused" | "error";
+  translationState: "idle" | "listening" | "paused" | "reconnecting" | "error";
   onStart: () => void;
   onPause: () => void;
   onResume: () => void;
   speechError: string | null;
   isSupported: boolean;
-  language?: "ko" | "en";
+  language?: "ko" | "ko-only" | "en";
 }
 
 export function TranslationControls({
@@ -32,18 +32,18 @@ export function TranslationControls({
         onClick={onStart}
         className="inline-flex items-center gap-2 rounded-lg border border-border bg-surface-raised px-5 py-2.5 text-sm font-medium text-foreground hover:bg-surface-hover transition-colors"
       >
-        {language === "ko" ? "Start Live Translation" : "Start English Transcription"}
+        {language === "ko" ? "Start Live Translation" : language === "ko-only" ? "Start Korean Transcription" : "Start English Transcription"}
       </button>
     );
   }
 
-  if (translationState === "listening") {
+  if (translationState === "listening" || translationState === "reconnecting") {
     return (
       <div className="flex flex-col items-center gap-2">
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-2 text-sm text-foreground">
             <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse" aria-hidden />
-            Listening
+            {translationState === "reconnecting" ? "Reconnecting microphone…" : "Listening"}
           </span>
           <button
             type="button"

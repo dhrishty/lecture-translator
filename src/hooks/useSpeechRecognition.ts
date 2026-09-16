@@ -1,17 +1,17 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SourceLanguage } from "@/types/lecture";
+import type { RecognitionMode } from "@/types/lecture";
 import type { SpeechRecognitionInstance } from "@/types/speech";
-export type SpeechStatus = "idle" | "listening" | "paused" | "unsupported" | "denied" | "error";
+export type SpeechStatus = "idle" | "listening" | "paused" | "reconnecting" | "unsupported" | "denied" | "error";
 
 export function useSpeechRecognition({ onFinalResult, onStopped, onActivity }: {
-  onFinalResult: (text: string, language: SourceLanguage) => void; onStopped: () => void; onActivity: () => void;
+  onFinalResult: (text: string, language: RecognitionMode) => void; onStopped: () => void; onActivity: () => void;
 }) {
   const [status, setStatus] = useState<SpeechStatus>("idle");
   const [interimText, setInterimText] = useState("");
   const [errorMessage, setError] = useState<string | null>(null);
   const recognition = useRef<SpeechRecognitionInstance | null>(null);
-  const desiredLanguage = useRef<SourceLanguage>("ko");
+  const desiredLanguage = useRef<RecognitionMode>("ko");
   const stopWaiters = useRef<Array<() => void>>([]);
   const listening = useRef(false);
   const running = useRef(false);
@@ -28,7 +28,8 @@ export function useSpeechRecognition({ onFinalResult, onStopped, onActivity }: {
     listening.current = true;
     setError(null);
     if (timer.current) clearTimeout(timer.current);
-    let emptyRestarts = 0;
+    let networkFailures = 0;
+    let restartDelay = 500;
     let finalIndices = new Set<number>();
     const instance = recognition.current ?? new Ctor();
     recognition.current = instance;
@@ -44,19 +45,20 @@ export function useSpeechRecognition({ onFinalResult, onStopped, onActivity }: {
       if (!listening.current) return;
       finalIndices = new Set();
       runLanguage = desiredLanguage.current;
-      instance.lang = runLanguage === "ko" ? "ko-KR" : "en-US";
+      instance.lang = runLanguage === "en" ? "en-US" : "ko-KR";
       try { running.current = true; instance.start(); }
       catch { running.current = false; fail("Could not start the microphone. Try again."); }
     };
     instance.onstart = () => { setStatus("listening"); };
     instance.onresult = event => {
+      networkFailures = 0; restartDelay = 500; setError(null);
       callbacks.current.onActivity();
       let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const text = result[0]?.transcript.trim();
         if (result.isFinal && text && !finalIndices.has(i)) {
-          finalIndices.add(i); emptyRestarts = 0;
+          finalIndices.add(i);
           callbacks.current.onFinalResult(text, runLanguage);
         } else if (!result.isFinal) interim += text ?? "";
       }
@@ -64,6 +66,12 @@ export function useSpeechRecognition({ onFinalResult, onStopped, onActivity }: {
     };
     instance.onerror = event => {
       if (event.error === "no-speech" || event.error === "aborted") return;
+      if (event.error === "network" && listening.current && ++networkFailures <= 5) {
+        restartDelay = Math.min(1000 * 2 ** (networkFailures - 1), 10000);
+        setStatus("reconnecting");
+        setError("Speech connection interrupted. Reconnecting automatically…");
+        return;
+      }
       fail(event.error === "not-allowed" || event.error === "service-not-allowed"
         ? "Microphone permission denied. Allow microphone access in Chrome’s site settings, then retry."
         : `Speech recognition stopped (${event.error}). Check your microphone and connection, then retry.`);
@@ -74,8 +82,8 @@ export function useSpeechRecognition({ onFinalResult, onStopped, onActivity }: {
       if (stopTimer.current) clearTimeout(stopTimer.current);
       stopWaiters.current.splice(0).forEach(resolve => resolve());
       if (!listening.current) return;
-      if (++emptyRestarts > 5) { fail("Listening stopped after repeated interruptions. Check your connection and resume."); return; }
-      timer.current = setTimeout(begin, Math.min(500 * emptyRestarts, 3000));
+      setStatus("reconnecting");
+      timer.current = setTimeout(begin, restartDelay);
     };
     begin();
   }, []);
@@ -111,7 +119,7 @@ export function useSpeechRecognition({ onFinalResult, onStopped, onActivity }: {
     callbacks.current.onStopped();
     return stopped;
   }, []);
-  const changeLanguage = useCallback((language: SourceLanguage) => {
+  const changeLanguage = useCallback((language: RecognitionMode) => {
     desiredLanguage.current = language;
     callbacks.current.onStopped();
     if (running.current) recognition.current?.stop();

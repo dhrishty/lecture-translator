@@ -11,7 +11,7 @@ import { TranslationControls } from "./TranslationControls";
 import { LiveTranslation } from "./LiveTranslation";
 import { ModeToggle } from "./ModeToggle";
 import { LectureReview } from "./LectureReview";
-import type { SourceLanguage } from "@/types/lecture";
+import type { RecognitionMode } from "@/types/lecture";
 import { EndLectureDialog } from "./EndLectureDialog";
 import { copyToClipboard, formatCurrentSlideForExport, formatLectureForExport } from "@/services/clipboardExportService";
 
@@ -19,7 +19,7 @@ type Controller = ReturnType<typeof useLectureSession>;
 function ActiveLecture({ lecture, provider }: { lecture: Controller; provider: string }) {
   const { session } = lecture;
   const speech = useSpeechRecognition({ onFinalResult: lecture.handleFinalSpeech, onStopped: lecture.flushTranscriptBuffer, onActivity: lecture.handleSpeechActivity });
-  const [language, setLanguage] = useState<SourceLanguage>("ko");
+  const [language, setLanguage] = useState<RecognitionMode>("ko");
   const [reviewing, setReviewing] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -72,7 +72,7 @@ function ActiveLecture({ lecture, provider }: { lecture: Controller; provider: s
         <TranslationControls language={language} translationState={translationState} onStart={speech.start} onPause={() => void speech.pause()} onResume={speech.resume} speechError={speech.errorMessage} isSupported={speech.isSupported} />
       </div>
       {session.currentSlide === session.totalSlides && <div className="finish-action"><button className="primary-button" disabled={finishing} onClick={() => void finish()}>{finishing ? "Finishing transcription…" : "Finish Lecture →"}</button><p className="muted">Review all your notes, slide by slide.</p></div>}
-      <p className="provider-note">{language === "ko" ? provider : "English transcription · No translation requests"}</p>
+      <p className="provider-note">{language === "ko" ? provider : `${language === "ko-only" ? "Korean" : "English"} transcription · No translation requests`}</p>
       <ManualNotes key={`manual-${slide.slideNumber}`} value={slide.manualNotes} onChange={value => lecture.updateManualNotes(slide.slideNumber, value)} />
       <LiveTranslation segments={slide.transcriptSegments} language={language} interimText={[lecture.bufferedText, speech.interimText].filter(Boolean).join(" ")} onRetry={lecture.retryTranslation} onEdit={(id, text) => lecture.updateTranscriptNotes(slide.slideNumber, id, text)} />
       <footer className="copy-footer"><div><button className="primary-button" onClick={() => void copy()}>Copy Lecture</button>{session.pdfUrl && <button className="text-button" onClick={() => void copy(true)}>Copy Current Slide</button>}</div><p className="muted">Ready for Notion. Yours to keep only when you copy.</p><p role="status">{message}</p></footer>

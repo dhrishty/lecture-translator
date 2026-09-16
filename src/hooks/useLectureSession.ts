@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as pdfjs from "pdfjs-dist";
 import { pdfOptions } from "@/lib/pdfOptions";
-import { createEmptySlides, createInitialSession, type TranscriptSegment, type SourceLanguage } from "@/types/lecture";
+import { createEmptySlides, createInitialSession, type TranscriptSegment, type RecognitionMode } from "@/types/lecture";
 import { translationProvider } from "@/services/translation";
 import { addFinalizedPhrase, createTranscriptBuffer, flushBuffer, resetBuffer, noteSpeechActivity } from "@/lib/transcriptBuffer";
 
@@ -26,7 +26,7 @@ export function useLectureSession() {
   }, []);
 
   const translateSegment = useCallback(async (segment: TranscriptSegment) => {
-    if (segment.sourceLanguage === "en" || requests.current.has(segment.id)) return;
+    if (segment.transcribeOnly || segment.sourceLanguage === "en" || requests.current.has(segment.id)) return;
     const controller = new AbortController();
     requests.current.set(segment.id, controller);
     const epoch = generation.current;
@@ -47,22 +47,24 @@ export function useLectureSession() {
     }
   }, [update]);
 
-  const commitChunk = useCallback((originalText: string, slideNumber: number, sourceLanguage: SourceLanguage) => {
+  const commitChunk = useCallback((originalText: string, slideNumber: number, mode: RecognitionMode) => {
     if (!state.current.totalSlides) return;
     setBufferedText("");
+    const sourceLanguage = mode === "en" ? "en" : "ko";
+    const transcribeOnly = mode !== "ko";
     const segment: TranscriptSegment = {
       id: crypto.randomUUID(), sequenceNumber: ++sequence.current, slideNumber,
-      originalText, sourceLanguage, translatedEnglish: sourceLanguage === "en" ? originalText : "", timestamp: Date.now(), translationStatus: sourceLanguage === "en" ? "done" : "pending",
+      originalText, sourceLanguage, transcribeOnly, translatedEnglish: transcribeOnly ? originalText : "", timestamp: Date.now(), translationStatus: transcribeOnly ? "done" : "pending",
     };
     update(s => ({ ...s, slides: s.slides.map(slide => slide.slideNumber === slideNumber ? {
       ...slide, transcriptSegments: [...slide.transcriptSegments, segment],
     } : slide) }));
-    if (sourceLanguage === "ko") void translateSegment(segment);
+    if (!transcribeOnly) void translateSegment(segment);
   }, [translateSegment, update]);
   const flushTranscriptBuffer = useCallback(() => flushBuffer(buffer.current, commitChunk), [commitChunk]);
-  const handleFinalSpeech = useCallback((text: string, sourceLanguage: SourceLanguage) => {
+  const handleFinalSpeech = useCallback((text: string, mode: RecognitionMode) => {
     if (state.current.totalSlides) {
-      addFinalizedPhrase(buffer.current, text, state.current.currentSlide, commitChunk, sourceLanguage);
+      addFinalizedPhrase(buffer.current, text, state.current.currentSlide, commitChunk, mode);
       setBufferedText(buffer.current.phrases.map(phrase => phrase.text).join(" "));
     }
   }, [commitChunk]);

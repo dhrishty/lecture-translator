@@ -1,3 +1,5 @@
+export type RecognitionMode = "ko" | "ko-only" | "en";
+
 export type SourceLanguage = "ko" | "en";
 
 export type TranslationStatus = "pending" | "translating" | "done" | "failed";
@@ -9,6 +11,7 @@ export interface TranscriptSegment {
   originalText: string;
   sourceLanguage: SourceLanguage;
   editedText?: string;
+  transcribeOnly?: boolean;
   translationError?: string;
   translatedEnglish: string;
   timestamp: number;

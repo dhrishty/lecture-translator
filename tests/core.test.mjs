@@ -208,3 +208,58 @@ test("long paragraphs are split for transport without dropping words", () => {
   assert.ok(chunks.length > 1); assert.ok(chunks.every(chunk => chunk.length <= 3000));
   assert.equal(chunks.join(" "), paragraph);
 });
+
+test("Korean-only paragraphs keep their capture mode across switches", () => {
+  const b = buffer.createTranscriptBuffer(); const chunks = [];
+  const flush = (text, slide, mode) => chunks.push({ text, mode });
+  buffer.addFinalizedPhrase(b, "번역", 1, flush, "ko");
+  buffer.addFinalizedPhrase(b, "한글만", 1, flush, "ko-only");
+  buffer.flushBuffer(b, flush);
+  assert.deepEqual(chunks, [{ text: "번역", mode: "ko" }, { text: "한글만", mode: "ko-only" }]);
+});
+test("export pairs Korean paragraphs with English and does not duplicate Korean-only notes", () => {
+  const text = exporter.formatLectureForExport("Lecture", [{ slideNumber: 1, manualNotes: "", transcriptSegments: [
+    { sourceLanguage: "ko", originalText: "첫째", translatedEnglish: "First", translationStatus: "done" },
+    { sourceLanguage: "ko", originalText: "둘째", translatedEnglish: "Second", translationStatus: "done" },
+    { sourceLanguage: "ko", originalText: "한글만", translatedEnglish: "한글만", transcribeOnly: true, translationStatus: "done" },
+  ] }]);
+  assert.match(text, /첫째\n\nFirst\n\n둘째\n\nSecond/);
+  assert.equal(text.split("한글만").length, 2);
+});
+
+// Exercise actual recognition handlers with a minimal hook/browser harness.
+test("recognition survives quiet sessions, retries network failures, and pause cancels retries", async context => {
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const reactStub = 'data:text/javascript,' + encodeURIComponent('export const useCallback = f => f; export const useRef = current => ({current}); export const useState = v => [v, () => {}]; export const useEffect = f => { f(); };');
+  const speechModule = await import(await moduleURL("../src/hooks/useSpeechRecognition.ts", { '"react"': JSON.stringify(reactStub) }));
+  const saved = globalThis.window;
+  let instance; let starts = 0; let stopped = 0; const results = [];
+  class Recognition {
+    constructor() {
+      // The fake browser exposes its active recognition instance to the test.
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      instance = this;
+    }
+    start() { starts++; this.onstart(); }
+    stop() { this.onend(); }
+    abort() {}
+  }
+  globalThis.window = { SpeechRecognition: Recognition, addEventListener() {}, removeEventListener() {} };
+  try {
+    const speech = speechModule.useSpeechRecognition({ onFinalResult: (...args) => results.push(args), onStopped: () => stopped++, onActivity() {} });
+    speech.start();
+    for (let i = 0; i < 8; i++) { instance.onerror({ error: "no-speech" }); instance.onend(); context.mock.timers.tick(500); }
+    assert.equal(starts, 9); assert.equal(stopped, 0);
+    instance.onerror({ error: "network" }); instance.onend(); context.mock.timers.tick(1000);
+    assert.equal(starts, 10); assert.equal(stopped, 0);
+    speech.changeLanguage("ko-only"); context.mock.timers.tick(1000);
+    assert.equal(instance.lang, "ko-KR");
+    const result = Object.assign([{ transcript: "한글" }], { isFinal: true });
+    instance.onresult({ resultIndex: 0, results: [result] });
+    assert.deepEqual(results, [["한글", "ko-only"]]);
+    instance.onerror({ error: "network" }); instance.onend();
+    const before = starts;
+    await speech.pause(); context.mock.timers.tick(20000);
+    assert.equal(starts, before);
+  } finally { globalThis.window = saved; }
+});

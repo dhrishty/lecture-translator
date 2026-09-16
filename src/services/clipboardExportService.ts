@@ -15,25 +15,15 @@ function formatSlideSection(slide: SlideData, withSlideHeaders = true): string |
     parts.push("", "### Notes", "", notes);
   }
 
-  const english = segments
-    .map((s) => (s.editedText ?? s.translatedEnglish).trim())
-    .filter(Boolean)
-    .join("\n\n");
-
-  const korean = segments
-    .filter(s => s.sourceLanguage === "ko")
-    .map((s) => s.originalText.trim())
-    .filter(Boolean)
-    .join("\n\n");
-
-  if (english) {
-    parts.push("", "### Transcribed Notes", "", english);
-  } else if (korean) {
-    parts.push("", "### Transcribed Notes", "", "_(Translation pending or failed)_");
-  }
-
-  if (korean) {
-    parts.push("", "### Original Korean", "", korean);
+  if (segments.length) {
+    const paragraphs = segments.map(s => {
+      const edited = (s.editedText ?? s.translatedEnglish).trim();
+      if (s.sourceLanguage === "ko" && !s.transcribeOnly) {
+        return `${s.originalText.trim()}\n\n${edited || "_(Translation pending or failed)_"}`;
+      }
+      return edited || s.originalText.trim();
+    });
+    parts.push("", "### Transcribed Notes", "", paragraphs.join("\n\n"));
   }
 
   return parts.join("\n");
