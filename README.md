@@ -46,9 +46,10 @@ The setup script creates a project-local Python virtual environment and installs
 
 - Choose **Start without slides** for a notes-only lecture, or upload a PDF, up to 100 MB. Password-protected PDFs are unsupported.
 - Use the language icon to toggle **Korean → English translation** or **English-only transcription**.
-- Start listening and allow microphone access. Language changes restart recognition with the correct language after flushing the previous mode; late finalized speech retains its original language.
+- Start listening and allow microphone access. Language changes close the previous decoding context; late results retain their original language.
 - Local microphone capture uses an AudioWorklet and 16 kHz mono PCM. Whisper Base runs in a dedicated worker with WebGPU (fp32 encoder/q4 decoder), falling back to quantized WASM (q8) during initialization. No Chrome Web Speech API remains.
-- Paragraphs close after **3 seconds of energy-detected silence**. Recognition windows are at most about 24 seconds; short pauses after 15 seconds are preferred as window boundaries. Long speech is assembled as text before translation. Pause, Finish, slide changes and mode changes close the current paragraph. Each result carries its capture slide and mode.
+- The live pipeline uses pinned `onnx-community/whisper-base_timestamped` (same multilingual Base model with cross-attention outputs required for word alignment). Continuous windows are **24 seconds with 3 seconds of overlap**, advancing 21 seconds. The old 15-second/200 ms boundary and RMS 0.008 input gate are removed. All quiet frames are preserved. RMS below 0.00001 for 3 seconds is only a paragraph-boundary hint; exact digital silence alone can skip inference.
+- Timestamped overlap is held provisional until the next window. Conservative normalized suffix/prefix matching reconciles shared audio; disagreement uses the overlap's time midpoint and reports a review warning. Words use their estimated midpoint for slide ownership. Slide clicks annotate the sample timeline without resetting audio context. Language changes, Pause and Finish drain the tail. Word timestamps are approximate; invalid/missing timestamps stop transcription explicitly rather than assigning a crossing window to one slide.
 - Capture pauses when pending inference reaches 48 seconds or 48 jobs, allowing the queue to drain. A hard limit of 100 seconds/64 jobs prevents unbounded audio accumulation if callbacks are delayed. Only bounded PCM and model tensors exist in RAM; no full lecture recording exists. Continuous 60–90-minute performance depends on hardware.
 - Navigate with arrows or keyboard Left/Right. Notes retain their slide, and typing in editors does not navigate slides.
 - Edit manual notes and completed transcriptions with the same lightweight block editor: `/heading 1`, `/heading 2`, `/heading 3`, `/bullet`, or the format toolbar. Type `- ` for a bullet; Enter continues the list, and Enter on an empty bullet returns to normal text. `# `, `## `, and `### ` also create headings. Basic undo/redo is available while editing.
@@ -64,7 +65,7 @@ PDFs, manual notes, transcripts, translations, and the review page live only in 
 
 Microphone audio is never uploaded, recorded to a file, or placed in browser storage. Audio buffers are cleared/released after inference and the worker is terminated on exit. Public model/runtime files may be cached by Transformers.js; they contain no lecture data. Only finalized Korean paragraphs in translation mode go through the existing LibreTranslate endpoint. Transcription-only modes send no text for translation. Browser/OS memory reclamation is outside the app's control.
 
-Use HTTPS or localhost with microphone permission and AudioWorklet/WebAssembly support. A recent desktop Chrome/Edge with WebGPU and a laptop with 8 GB+ RAM is recommended. Base model weights are approximately 207 MB for WebGPU or 77 MB for WASM, plus tokenizer/runtime files; falling back after a GPU failure can download both variants. WASM may not run in real time. Keep the tab open and device awake. Noise, hard audio-window boundaries and Korean technical vocabulary can affect accuracy; Whisper can produce incorrect text. Silence filtering reduces unnecessary inference but is not a trained voice-activity detector. No LLM, summary or other generative feature is included.
+Use HTTPS or localhost with microphone permission and AudioWorklet/WebAssembly support. A recent desktop Chrome/Edge with WebGPU and a laptop with 8 GB+ RAM is recommended. Base model weights are approximately 207 MB for WebGPU or 77 MB for WASM, plus tokenizer/runtime files; falling back after a GPU failure can download both variants. WASM may not run in real time. Keep the tab open and device awake. Noise, timestamp errors, overlap disagreements and Korean technical vocabulary can affect accuracy; Whisper can produce incorrect text. Near-zero energy provides a silence hint; it is not a trained voice-activity detector, and quiet speech is not amplitude-gated. No LLM, summary or other generative feature is included.
 
 Refresh/close triggers the browser's native leave warning where supported. The browser controls the message and may omit it. Page departure clears session memory, including back-cache recovery. Always copy before leaving.
 
@@ -109,3 +110,18 @@ Published application: https://lecture-translator-three.vercel.app
 Private source repository: https://github.com/dhrishty/lecture-translator
 
 `render.yaml` prepares a free-tier LibreTranslate backend. A Render account connection and Blueprint deployment are still required. The public Vercel app reports translation setup as incomplete until a reachable backend URL is configured; local translation continues working on the Mac.
+
+
+## Local Whisper comparison (no translation)
+
+Open `/whisper-test` in a separate tab. Select an existing Korean audio excerpt (maximum 3 minutes / 30 MB). The page checks duration before PCM decoding, processes only in browser memory, and never uploads or saves it. It runs:
+
+1. Multilingual Base with the prior independent chunking and decoding without word timestamps.
+2. Multilingual Base with 24-second overlapping windows and word timestamps.
+3. Multilingual Small with the same overlapping windows and word timestamps.
+
+The baseline is a reproduction of the old chunking, using the same pinned Base timestamp-capable export as the new run. It is not a claim of bit-for-bit equivalence to the old model export. All runs force Korean and use the selected backend (no silent fallback in comparison mode), the same precision policy, token budget and repetition penalty. Base stays the live default. Model IDs/revisions are pinned in `src/lib/whisper/models.ts`. Small loads only when this test runs. Workers/models are disposed between runs.
+
+Each result shows exact model/revision, actual backend/precision, unique source audio duration, model-loading time, summed inference time, processing wall time, raw Korean per window, and a separate combined transcript. Raw repetitions are retained and flagged, not scored or corrected. Deduplication warnings are shown. English translation is never requested. Clear Results or close the tab to discard text. Cancellation terminates the worker; temporary PCM is cleared on cleanup. Base/Small quality must be judged by the user on the same recording.
+
+Verification: synthetic 90-minute bounded-buffer test, Korean overlap fixture, cross-slide ownership, quiet speech, short pauses, timestamp validation and cancellation. Both pinned timestamp-enabled model families were smoke-tested with word timestamps using the web WASM runtime on public English sample audio. Browser WebGPU behavior and Korean classroom accuracy require device testing; no browser was available during development.

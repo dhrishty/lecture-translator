@@ -355,13 +355,125 @@ test("worker clears rejected audio and returns no loop text to the translation q
   try {
     await import(await moduleURL("../src/workers/whisper.worker.ts", {
       '\"@huggingface/transformers\"': JSON.stringify(mockRuntime),
+      '\"@/lib/whisper/models\"': JSON.stringify(await moduleURL("../src/lib/whisper/models.ts")),
       '\"@/lib/whisper/quality\"': JSON.stringify(await moduleURL("../src/lib/whisper/quality.ts")),
     }));
     await globalThis.self.onmessage({ data: { id: 1, type: "load" } });
     const pcm = voicedFrame();
     await globalThis.self.onmessage({ data: { id: 2, type: "transcribe", audio: pcm, mode: "ko" } });
     const result = messages.find(message => message.id === 2);
-    assert.equal(result.text, ""); assert.match(result.warning, /skipped/);
+    assert.equal(result.text, ""); assert.match(result.warning, /unreliable/);
     assert.ok(pcm.every(sample => sample === 0));
   } finally { globalThis.self = savedSelf; }
+});
+
+const continuous = await import(await moduleURL("../src/lib/whisper/continuous.ts"));
+const captureContext = { slide: 1, mode: "ko" };
+const timedJob = (start, end, final = false, boundaries = [{ sample: 0, context: captureContext }]) => ({
+  audio: new Float32Array(0), start: start * 16000, end: end * 16000, final, boundaries, context: boundaries.at(-1).context,
+});
+const wordsResult = (entries) => ({ text: entries.map(e => e[0]).join(" "), chunks: entries.map(([text, start, end]) => ({ text, timestamp: [start, end] })) });
+test("continuous windows share exactly three seconds and retain quiet speech and short pauses", () => {
+  const jobs = [];
+  const capture = new continuous.ContinuousAudio(captureContext, job => jobs.push(job));
+  for (let i = 0; i < 450; i++) capture.push(new Float32Array(1600).fill(i >= 150 && i < 152 ? 0 : 0.001));
+  assert.equal(jobs.length, 2);
+  assert.deepEqual(jobs.map(j => [j.start / 16000, j.end / 16000]), [[0, 24], [21, 45]]);
+  assert.deepEqual(jobs[0].audio.slice(-48000), jobs[1].audio.slice(0, 48000));
+  capture.finish(); assert.equal(jobs.at(-1).final, true);
+  assert.equal(jobs.at(-1).audio.length, 0); // No new samples: seal the provisional tail only.
+  jobs.forEach(j => j.audio.fill(0));
+});
+test("slide click adds a timed ownership marker without cutting the audio window", () => {
+  const jobs = [];
+  const capture = new continuous.ContinuousAudio(captureContext, job => jobs.push(job));
+  for (let i = 0; i < 100; i++) capture.push(voicedFrame());
+  capture.switchContext({ slide: 2, mode: "ko" });
+  assert.equal(jobs.length, 0);
+  for (let i = 0; i < 140; i++) capture.push(voicedFrame());
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].boundaries[1].sample, 160000);
+  assert.equal(jobs[0].audio.length, 384000);
+  capture.clear(); jobs[0].audio.fill(0);
+});
+test("Korean overlap example appears once, with real repetition outside overlap preserved", () => {
+  const output = [];
+  const merger = new continuous.TranscriptMerger(text => output.push(text), () => {}, assert.fail);
+  merger.accept(timedJob(0, 24), wordsResult([
+    ["표현의 자유와 명예 보호 사이의", 2, 10], ["균형을", 21, 22], ["고려해야", 22, 23], ["합니다", 23, 24],
+  ]));
+  assert.equal(output.length, 0);
+  merger.accept(timedJob(21, 45, true), wordsResult([
+    ["균형을", 0, 1], ["고려해야", 1, 2], ["합니다", 2, 3], ["그리고 법원은 이 사건에서", 3, 8], ["균형을 고려해야 합니다", 15, 20],
+  ]));
+  assert.deepEqual(output, ["표현의 자유와 명예 보호 사이의 균형을 고려해야 합니다 그리고 법원은 이 사건에서 균형을 고려해야 합니다"]);
+});
+test("overlap matching tolerates Korean spacing/punctuation but not a common single word", () => {
+  assert.deepEqual(continuous.overlapMatch(["균형을", "고려해야", "합니다."], ["균형을", "고려해야합니다", "그리고"]), { left: 0, right: 2, length: 10 });
+  assert.equal(continuous.overlapMatch(["이것은", "중요합니다"], ["중요합니다", "그리고"]), null);
+});
+test("matched overlap words keep original slide ownership and are emitted only once", () => {
+  const output = [];
+  const boundaries = [{ sample: 0, context: captureContext }, { sample: 22.5 * 16000, context: { slide: 2, mode: "ko" } }];
+  const merger = new continuous.TranscriptMerger((text, context) => output.push({ text, slide: context.slide }), () => {}, assert.fail);
+  merger.accept(timedJob(0, 24, false, boundaries), wordsResult([["앞부분", 1, 2], ["균형을", 21, 21.9], ["고려해야", 22, 22.8], ["합니다", 23, 23.9]]));
+  merger.accept(timedJob(21, 45, true, boundaries), wordsResult([["균형을", 0, 1], ["고려해야", 1.4, 2], ["합니다", 2, 3], ["새슬라이드", 4, 5]]));
+  assert.deepEqual(output, [{ text: "앞부분 균형을 고려해야", slide: 1 }, { text: "합니다 새슬라이드", slide: 2 }]);
+});
+test("missing word timestamps fail explicitly rather than assigning a crossing chunk to one slide", () => {
+  const merger = new continuous.TranscriptMerger(assert.fail, () => {});
+  assert.throws(() => merger.accept(timedJob(0, 24), { text: "한국어" }), /Word timestamps unavailable/);
+});
+test("a 90-minute rolling capture keeps fixed windows and retains no full recording", () => {
+  let count = 0; let lastStart = -21 * 16000;
+  const capture = new continuous.ContinuousAudio(captureContext, job => {
+    if (!job.final) {
+      assert.equal(job.audio.length, 24 * 16000);
+      assert.equal(job.start - lastStart, 21 * 16000);
+      lastStart = job.start; count++;
+    }
+    job.audio.fill(0);
+  });
+  for (let i = 0; i < 90 * 60 * 10; i++) capture.push(voicedFrame());
+  capture.finish(); capture.clear();
+  assert.equal(count, Math.floor((90 * 60 - 3) / 21));
+});
+test("clearing continuous queue releases waiting audio and ignores an in-flight result", async () => {
+  let resolve; let emitted = 0;
+  const queue = new continuous.ContinuousQueue(() => new Promise(r => { resolve = r; }), () => emitted++, () => {}, assert.fail);
+  const first = { ...timedJob(0, 24), audio: voicedFrame() };
+  const pending = { ...timedJob(21, 45, true), audio: voicedFrame() };
+  queue.enqueue(first); queue.enqueue(pending); queue.clear();
+  resolve(wordsResult([["늦은결과", 0, 0.05]]));
+  await queue.drain();
+  assert.equal(emitted, 0); assert.equal(queue.pendingSamples, 0);
+  assert.ok(first.audio.every(v => v === 0)); assert.ok(pending.audio.every(v => v === 0));
+});
+test("a word crossing the stable-window edge is retained whole until the next window", () => {
+  const output = []; const warnings = [];
+  const merger = new continuous.TranscriptMerger(text => output.push(text), () => {}, message => warnings.push(message));
+  merger.accept(timedJob(0, 24), wordsResult([["문장", 1, 2], ["균형을", 20.5, 21.3], ["고려해야", 21.3, 22.2], ["합니다", 22.2, 23]]));
+  merger.accept(timedJob(21, 45, true), wordsResult([["형을", 0, 0.3], ["고려해야", 0.3, 1.2], ["합니다", 1.2, 2], ["다음문장", 4, 5]]));
+  assert.deepEqual(output, ["문장 균형을 고려해야 합니다 다음문장"]);
+});
+test("mode changes close language context while slide changes preserve it", () => {
+  const jobs = [];
+  const capture = new continuous.ContinuousAudio(captureContext, job => jobs.push(job));
+  capture.push(voicedFrame()); capture.switchContext({ slide: 1, mode: "en" });
+  assert.equal(jobs.length, 1); assert.equal(jobs[0].context.mode, "ko"); assert.equal(jobs[0].final, true);
+  capture.push(voicedFrame()); capture.finish();
+  assert.equal(jobs[1].context.mode, "en"); assert.equal(jobs[1].start, 1600);
+  jobs.forEach(job => job.audio.fill(0)); capture.clear();
+});
+test("a later inference failure preserves already aligned stable text", async () => {
+  let calls = 0; const emitted = []; const errors = [];
+  const queue = new continuous.ContinuousQueue(async () => {
+    if (++calls === 2) throw new Error("Device lost");
+    return wordsResult([["확정된 문장", 1, 2], ["미확정", 23, 24]]);
+  }, text => emitted.push(text), () => {}, message => errors.push(message));
+  queue.enqueue({ ...timedJob(0, 24), audio: voicedFrame() });
+  await queue.drain();
+  queue.enqueue({ ...timedJob(21, 45), audio: voicedFrame() });
+  await queue.drain();
+  assert.deepEqual(emitted, ["확정된 문장"]); assert.deepEqual(errors, ["Device lost"]);
 });

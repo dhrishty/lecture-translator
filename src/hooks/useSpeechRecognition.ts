@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RecognitionMode } from "@/types/lecture";
-import { ParagraphAudio, TranscriptionQueue, type CaptureContext } from "@/lib/whisper/audio";
+import type { CaptureContext } from "@/lib/whisper/audio";
+import { ContinuousAudio, ContinuousQueue, type RecognitionResult } from "@/lib/whisper/continuous";
 export type SpeechStatus = "idle" | "loading" | "listening" | "processing" | "paused" | "unsupported" | "error";
 
 export function useSpeechRecognition({ onParagraph, slideNumber }: {
@@ -19,12 +20,12 @@ export function useSpeechRecognition({ onParagraph, slideNumber }: {
   const stream = useRef<MediaStream | null>(null);
   const audioContext = useRef<AudioContext | null>(null);
   const capture = useRef<AudioWorkletNode | null>(null);
-  const segmenter = useRef<ParagraphAudio | null>(null);
-  const queue = useRef<TranscriptionQueue | null>(null);
+  const segmenter = useRef<ContinuousAudio | null>(null);
+  const queue = useRef<ContinuousQueue | null>(null);
   const wanted = useRef(false);
   const epoch = useRef(0);
   const nextId = useRef(0);
-  const pending = useRef(new Map<number, { resolve: (value: { text?: string; backend?: string }) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>());
+  const pending = useRef(new Map<number, { resolve: (value: RecognitionResult & { backend?: string }) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>());
   const pausing = useRef<Promise<void> | null>(null);
   const lastFrame = useRef(0);
   const watchdog = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -92,7 +93,7 @@ export function useSpeechRecognition({ onParagraph, slideNumber }: {
       await audioContext.current.resume();
       if (!current() || !wanted.current) return;
       if (!worker.current) worker.current = new Worker(new URL("../workers/whisper.worker.ts", import.meta.url), { type: "module" });
-      const request = (type: string, audio?: Float32Array, mode?: RecognitionMode) => new Promise<{ text?: string; backend?: string }>((resolve, reject) => {
+      const request = (type: string, audio?: Float32Array, mode?: RecognitionMode) => new Promise<RecognitionResult & { backend?: string }>((resolve, reject) => {
         const id = ++nextId.current;
         const timer = setTimeout(() => { pending.current.delete(id); reject(new Error("Whisper took too long. Try a faster device or reload the model.")); }, type === "load" ? 600000 : 180000);
         pending.current.set(id, { resolve, reject, timer });
@@ -117,10 +118,10 @@ export function useSpeechRecognition({ onParagraph, slideNumber }: {
       const audio = audioContext.current!;
       await audio.audioWorklet.addModule("/microphone-worklet.js");
       if (!current() || !wanted.current) return;
-      queue.current = new TranscriptionQueue(async (pcm, mode) => (await request("transcribe", pcm, mode)).text ?? "",
+      queue.current = new ContinuousQueue(async (pcm, mode) => await request("transcribe", pcm, mode),
         (text, captured) => { if (current()) callback.current(text, captured.slide, captured.mode); },
-        (text, captured) => { if (current() && captured.slide === context.current.slide) setInterimText(text); }, fail);
-      segmenter.current = new ParagraphAudio({ ...context.current }, window => {
+        (text, captured) => { if (current() && captured.slide === context.current.slide) setInterimText(text); }, fail, message => { if (current()) setError(message); });
+      segmenter.current = new ContinuousAudio({ ...context.current }, window => {
         queue.current!.enqueue(window);
         if (queue.current!.overloaded && wanted.current) {
           setError("This device is falling behind. Microphone paused while pending audio finishes; resume when ready.");
