@@ -138,6 +138,6 @@ export function useLectureSession() {
   }, [endLecture]);
   const getSnapshot = useCallback(() => { flushTranscriptBuffer(); return state.current; }, [flushTranscriptBuffer]);
 
-  return { handleWhisperParagraph: commitChunk, session, bufferedText, uploadError, isLoadingPdf, uploadPdf, startWithoutSlides, handleSpeechActivity, goToSlide, updateManualNotes, updateTranscriptNotes, handleFinalSpeech,
+  return { session, bufferedText, uploadError, isLoadingPdf, uploadPdf, startWithoutSlides, handleSpeechActivity, goToSlide, updateManualNotes, updateTranscriptNotes, handleFinalSpeech,
     flushTranscriptBuffer, retryTranslation, endLecture, getSnapshot, hasActiveLecture: session.totalSlides > 0 };
 }
