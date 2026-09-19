@@ -92,8 +92,8 @@ export function useLectureSession() {
       const pdf = await task.promise;
       if (!pdf.numPages) throw new Error("Empty PDF");
       if (epoch !== generation.current) return;
-      update(() => ({ ...createInitialSession(), title: file.name.replace(/\.pdf$/i, ""), pdfFile: file,
-        pdfUrl: URL.createObjectURL(file), totalSlides: pdf.numPages, slides: createEmptySlides(pdf.numPages) }));
+      update(s => ({ ...createInitialSession(), title: file.name.replace(/\.pdf$/i, ""), pdfFile: file,
+        pdfUrl: URL.createObjectURL(file), totalSlides: pdf.numPages, slides: createEmptySlides(pdf.numPages).map((slide, index) => index === 0 && !s.pdfUrl && s.slides[0] ? { ...s.slides[0], slideNumber: 1 } : slide) }));
     } catch {
       setUploadError("Cannot open this PDF. It may be damaged or password protected.");
     } finally {

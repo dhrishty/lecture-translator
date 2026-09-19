@@ -15,12 +15,12 @@ export function SlideNavigation({
   const totalPadded = String(totalSlides).padStart(2, "0");
 
   return (
-    <div className="flex items-center justify-center gap-6">
+    <div className="slide-navigation">
       <button
         type="button"
         onClick={onPrevious}
         disabled={currentSlide <= 1}
-        className="flex items-center justify-center w-10 h-10 rounded-lg border border-border text-muted hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        className="slide-arrow"
         aria-label="Previous slide"
       >
         ←
@@ -34,7 +34,7 @@ export function SlideNavigation({
         type="button"
         onClick={onNext}
         disabled={currentSlide >= totalSlides}
-        className="flex items-center justify-center w-10 h-10 rounded-lg border border-border text-muted hover:text-foreground hover:bg-surface-hover transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+        className="slide-arrow"
         aria-label="Next slide"
       >
         →

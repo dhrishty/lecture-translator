@@ -1,3 +1,4 @@
+import { notesToHtml } from "@/lib/richNotes";
 import type { SlideData } from "@/types/lecture";
 
 function formatSlideSection(slide: SlideData, withSlideHeaders = true): string | null {
@@ -60,6 +61,15 @@ export function formatCurrentSlideForExport(
 }
 
 export async function copyToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/plain": new Blob([text], { type: "text/plain" }),
+        "text/html": new Blob([notesToHtml(text)], { type: "text/html" }),
+      })]);
+      return;
+    } catch { /* Fall back to the existing plain-text copy path. */ }
+  }
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
     return;

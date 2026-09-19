@@ -12,7 +12,9 @@ async function moduleURL(path, replacements = {}) {
   return `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`;
 }
 const buffer = await import(await moduleURL("../src/lib/transcriptBuffer.ts"));
-const exporter = await import(await moduleURL("../src/services/clipboardExportService.ts"));
+const richURL = await moduleURL("../src/lib/richNotes.ts");
+const rich = await import(richURL);
+const exporter = await import(await moduleURL("../src/services/clipboardExportService.ts", { '"@/lib/richNotes"': JSON.stringify(richURL) }));
 const libreURL = await moduleURL("../src/services/translation/libreTranslate.ts");
 const route = await import(await moduleURL("../src/app/api/translate/route.ts", {
   '"next/server"': JSON.stringify(pathToFileURL(require.resolve("next/server.js")).href),
@@ -262,4 +264,46 @@ test("recognition survives quiet sessions, retries network failures, and pause c
     await speech.pause(); context.mock.timers.tick(20000);
     assert.equal(starts, before);
   } finally { globalThis.window = saved; }
+});
+
+
+test("rich note export preserves Korean, inline styles, headings and lists without accepting arbitrary HTML", () => {
+  const html = rich.notesToHtml("# 강의\n**굵게** *기울임* <u>밑줄</u>\n- 첫 번째\n- 두 번째\n\n<script>alert(1)</script>");
+  assert.match(html, /<h1>강의<\/h1>/);
+  assert.match(html, /<strong>굵게<\/strong> <em>기울임<\/em> <u>밑줄<\/u>/);
+  assert.match(html, /<ul><li>첫 번째<\/li><li>두 번째<\/li><\/ul>/);
+  assert.ok(!html.includes("<script>"));
+  assert.ok(html.includes("&lt;script&gt;"));
+});
+
+test("combined inline styles remain formatted when notes are reopened", () => {
+  assert.equal(rich.inlineNoteHtml("***강조***"), "<strong><em>강조</em></strong>");
+  assert.equal(rich.inlineNoteHtml("<u>**강조**</u>"), "<u><strong>강조</strong></u>");
+});
+
+test("uploading a PDF after mode selection preserves existing manual notes", async () => {
+  const data = source => 'data:text/javascript,' + encodeURIComponent(source);
+  const reactStub = data('export const useCallback = f => f; export const useRef = current => ({current}); export const useState = v => [typeof v === "function" ? v() : v, () => {}]; export const useEffect = () => {};');
+  const pdfStub = data('export const GlobalWorkerOptions = {}; export const getDocument = () => ({promise: Promise.resolve({numPages: 3}), destroy: async () => {}});');
+  const sessionModule = await import(await moduleURL("../src/hooks/useLectureSession.ts", {
+    '"react"': JSON.stringify(reactStub),
+    '"pdfjs-dist"': JSON.stringify(pdfStub),
+    '"@/lib/pdfOptions"': JSON.stringify(data('export const pdfOptions = {};')),
+    '"@/types/lecture"': JSON.stringify(await moduleURL("../src/types/lecture.ts")),
+    '"@/services/translation"': JSON.stringify(data('export const translationProvider = {};')),
+    '"@/lib/transcriptBuffer"': JSON.stringify(await moduleURL("../src/lib/transcriptBuffer.ts")),
+    'new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString()': '"mock-worker"',
+  }));
+  const session = sessionModule.useLectureSession();
+  session.startWithoutSlides();
+  session.updateManualNotes(1, "# Before upload\n**Keep these notes**");
+  await session.uploadPdf(new File(["mock PDF"], "Microeconomics.pdf", {type: "application/pdf"}));
+  const snapshot = session.getSnapshot();
+  assert.equal(snapshot.title, "Microeconomics");
+  assert.equal(snapshot.totalSlides, 3);
+  assert.equal(snapshot.slides[0].manualNotes, "# Before upload\n**Keep these notes**");
+  assert.equal(snapshot.slides[1].manualNotes, "");
+  session.endLecture();
+  assert.equal(session.getSnapshot().totalSlides, 0);
+  assert.equal(session.getSnapshot().slides.length, 0);
 });

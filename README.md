@@ -1,4 +1,4 @@
-# Lecture Translator
+# HanYong
 
 A temporary Korean → English or English-only lecture workspace for Chrome on laptops. Upload slides, listen, edit notes, and copy the lecture before leaving.
 
@@ -44,17 +44,17 @@ The setup script creates a project-local Python virtual environment and installs
 
 ## Lecture workflow
 
-- Choose **Start without slides** for a notes-only lecture, or upload a PDF, up to 100 MB. Password-protected PDFs are unsupported.
-- Use the language icon to toggle **Korean → English translation** or **English-only transcription**.
-- Start listening and allow microphone access. Language changes restart recognition with the correct language after flushing the previous mode; late finalized speech retains its original language.
+- Choose Korean → English, Korean-only, or English-only on the dashboard. In the workspace, upload a PDF up to 100 MB or choose **Continue without Slides** to hide the upload area. The lecture title comes from the PDF filename; slide-free sessions use “Lecture notes.” Password-protected PDFs are unsupported.
+- The workspace mode selector remains available to switch between all three modes.
+- **Start Lecture** requests microphone access; opening the workspace does not start listening. Use **Pause Lecture** and **Resume Lecture** as needed. Language changes restart recognition with the correct language after flushing the previous mode; late finalized speech retains its original language.
 - Paragraphs close after **3 seconds without recognition activity**, including interim results. Browser sentence boundaries and automatic recognition restarts do not force a new paragraph. Pause, Finish, slide changes, and mode changes flush captured text immediately. Long paragraphs are split only for transport and rejoined in the notes. Silence timing follows Chrome recognition events, so browser delays can affect it.
 - Navigate with arrows or keyboard Left/Right. Notes retain their slide, and typing in editors does not navigate slides.
-- Edit manual notes and completed transcriptions with the same lightweight block editor: `/heading 1`, `/heading 2`, `/heading 3`, `/bullet`, or the format toolbar. Type `- ` for a bullet; Enter continues the list, and Enter on an empty bullet returns to normal text. `# `, `## `, and `### ` also create headings. Basic undo/redo is available while editing.
+- Edit manual notes and completed transcriptions with the same lightweight block editor: `/heading 1`, `/heading 2`, `/heading 3`, `/bullet`, or the format toolbar. Type `- ` for a bullet; Enter continues the list, and Enter on an empty bullet returns to normal text. `# `, `## `, and `### ` also create headings. Bold, italic, and underline work on selections or newly typed text. Basic undo/redo and Korean IME composition use Chrome’s native editing support. Paste inserts plain text.
 - Notes have no white focus border.
-- On the last slide (or at any time without slides), **Finish Lecture** stops recognition, collects finalized speech, and opens an editable review page with **Slide 1 / Slide 2 / Slide 3** headings, manual notes, and transcribed notes. No PDF slides appear there. Pending translations continue updating their original segments.
-- **Copy Lecture** copies nonempty slides in order as Markdown, preserving edited headings/lists. **Copy Current Slide** is also available. Paste into Notion without an integration or account.
+- From any slide, **End Lecture** stops recognition, collects finalized speech, and opens an editable review page with **Slide 1 / Slide 2 / Slide 3** headings, manual notes, and transcribed notes. No PDF slides appear there. Pending translations continue updating their original segments.
+- **Copy Lecture** copies nonempty slides in order as formatted HTML plus a Markdown plain-text fallback, preserving headings, lists, bold, italic, and underline. **Copy Current Slide** is also available. Paste into Notion without an integration or account.
 - Copy flushes buffered finalized speech immediately. Pending/failed translations include Korean; copy again once translation finishes for the English. Interim speech is never committed or exported.
-- **End Lecture** shows a confirmation. Copy keeps the session open. End Without Copying destroys it. Review is temporary too.
+- On the review page, **End Lecture** opens the confirmation popup. **Copy Lecture** keeps the popup/session open; the final **End Lecture** destroys it and returns to the dashboard. Escape, the close button, or the backdrop returns to review. Review is temporary too.
 
 ## Privacy and practical limits
 
@@ -71,7 +71,9 @@ Refresh/close triggers the browser's native leave warning where supported. The b
 ```text
 src/components/LectureWorkspace.tsx       Upload, lecture, and review flow
 src/components/LectureReview.tsx          Whole-lecture editing without PDF slides
-src/components/NotesEditor.tsx            Shared heading/list block editor
+src/components/NotesEditor.tsx            Shared rich-text editor
+src/components/Dashboard.tsx              Three-mode entry screen
+src/lib/richNotes.ts                      Safe formatting and clipboard HTML
 src/components/ModeToggle.tsx             English-only / Korean translation control
 src/components/PDFViewer.tsx              Memoized PDF canvas and cleanup
 src/hooks/useLectureSession.ts           In-memory state and segment-ID updates
@@ -94,7 +96,7 @@ npm run build -- --webpack
 
 Tests cover slide/language chunk boundaries, buffer disposal, block formatting, edited export, request validation, missing server setup, Korean support checks, minimal translation payloads, auth/throttling failures, and invalid responses. Provider HTTP is mocked in unit tests; that does not certify live availability.
 
-Before class, verify your Korean PDF, microphone permission, both modes, rapid slide changes, Finish Lecture, editing, and Notion paste in Chrome. Browser layout and real microphone behavior have not been verified by the agent because no browser was available.
+Before class, verify your Korean PDF, microphone permission, both modes, rapid slide changes, End Lecture → review → confirmation, editing, and Notion paste in Chrome. Browser layout and real microphone behavior have not been verified by the agent because no browser was available.
 
 ## GitHub and Vercel
 

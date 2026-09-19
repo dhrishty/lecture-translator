@@ -10,10 +10,10 @@ export function LectureReview({ session, onManualEdit, onTranscriptEdit, onRetry
 }) {
   const pending = session.slides.flatMap(s => s.transcriptSegments).filter(s => s.translationStatus === "translating" || s.translationStatus === "pending").length;
   return <>
-    <header className="workspace-header"><span className="wordmark">Lecture / <span>Review</span></span><button className="text-button" onClick={onBack}>Back to lecture</button></header>
+    <header className="workspace-header"><span className="wordmark">HanYong <span>Lecture Notes</span></span><button className="text-button" onClick={onBack}>Back to lecture</button></header>
     <main className="workspace review-workspace">
-      <div className="lecture-heading"><p className="eyebrow">YOUR WHOLE LECTURE</p><h1>{session.title}</h1><p className="muted">Listening has stopped. Review, edit, and copy your notes before leaving.</p></div>
-      <div className="review-actions"><button className="primary-button" onClick={onCopy}>Copy Lecture</button><button className="text-button" onClick={onEnd}>End Lecture</button></div>
+      <div className="lecture-heading"><p className="review-intro">Congrats! You finished the lecture, here are your notes</p><h1>{session.title}</h1></div>
+      <div className="review-actions"><button className="secondary-button" onClick={onCopy}>Copy Lecture</button><button className="danger-button" onClick={onEnd}>End Lecture</button></div>
       <p role="status" className="copy-message">{message}</p>
       {pending > 0 && <p role="status" className="provider-note">Finishing {pending} translation{pending === 1 ? "" : "s"}… Korean text is already included if you copy now.</p>}
       {session.slides.map(slide => <section className="review-slide" key={slide.slideNumber} aria-labelledby={`review-slide-${slide.slideNumber}`}>
@@ -22,7 +22,7 @@ export function LectureReview({ session, onManualEdit, onTranscriptEdit, onRetry
         <LiveTranslation segments={slide.transcriptSegments} language={slide.transcriptSegments.some(s => s.sourceLanguage === "ko") ? (slide.transcriptSegments.some(s => s.sourceLanguage === "ko" && !s.transcribeOnly) ? "ko" : "ko-only") : "en"}
           onRetry={onRetry} onEdit={(id, text) => onTranscriptEdit(slide.slideNumber, id, text)} />
       </section>)}
-      <footer className="copy-footer"><button className="primary-button" onClick={onCopy}>Copy Lecture</button><p className="muted">Nothing is saved. Your notes disappear when you leave.</p></footer>
+      <footer className="copy-footer"><button className="secondary-button" onClick={onCopy}>Copy Lecture</button><p className="muted">Nothing is saved. Your notes disappear when you leave.</p></footer>
     </main>
   </>;
 }
